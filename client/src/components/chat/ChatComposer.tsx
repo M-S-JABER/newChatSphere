@@ -58,6 +58,7 @@ export type ChatComposerProps = {
   onSendTemplate?: (payload: ChatComposerTemplateSendPayload) => Promise<void> | void;
   templates?: TemplateCatalogItem[];
   readyMessages?: ReadyMessage[];
+  conversationId?: string | null;
   maxFiles?: number;
   maxFileSizeMB?: number;
   acceptedTypes?: ReadonlyArray<string>;
@@ -111,6 +112,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
       onSendTemplate,
       templates = [],
       readyMessages = [],
+      conversationId,
       maxFiles = DEFAULT_MAX_FILES,
       maxFileSizeMB = DEFAULT_MAX_FILE_SIZE_MB,
       acceptedTypes = DEFAULT_ACCEPTED_TYPES,
@@ -135,7 +137,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
     const selectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
     const attachmentsRef = useRef<ComposerAttachment[]>(attachments);
     const clearTimerRef = useRef<number | null>(null);
-    const templateAutoOpenRef = useRef(false);
 
     const updateSelection = useCallback(() => {
       const el = textareaRef.current;
@@ -326,14 +327,6 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
     }, [availableReadyMessages, selectedReadyMessageId]);
 
     useEffect(() => {
-      if (templateAutoOpenRef.current) return;
-      if (availableTemplates.length > 0 || availableReadyMessages.length > 0) {
-        setTemplatePanelOpen(true);
-        templateAutoOpenRef.current = true;
-      }
-    }, [availableTemplates.length, availableReadyMessages.length]);
-
-    useEffect(() => {
       return () => {
         attachmentsRef.current.forEach(revokeAttachmentUrl);
         if (clearTimerRef.current !== null) {
@@ -341,6 +334,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
         }
       };
     }, []);
+
+    useEffect(() => {
+      setTemplatePanelOpen(false);
+    }, [conversationId]);
 
     // إبقاء الـ textarea بالحجم المناسب عند تغيّر النص (تعزيز للأوتو-ريسايز في onChange)
     useEffect(() => {

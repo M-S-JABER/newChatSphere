@@ -113,7 +113,8 @@ export default function Home() {
     if (
       event === "message_incoming" ||
       event === "message_outgoing" ||
-      event === "message_media_updated"
+      event === "message_media_updated" ||
+      event === "message_status"
     ) {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
       queryClient.refetchQueries({
@@ -194,6 +195,8 @@ export default function Home() {
     onMessage: handleWebSocketMessage,
   });
 
+  const pollingInterval = 1000;
+
   const { data: conversationsData, isLoading: conversationsLoading } = useQuery<{
     total: number;
     items: Conversation[];
@@ -206,6 +209,7 @@ export default function Home() {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
+    refetchInterval: pollingInterval,
   });
 
   const conversations = useMemo(() => {
@@ -215,14 +219,19 @@ export default function Home() {
         showArchived ? conversation.archived : !conversation.archived,
       )
       .map((conversation) => {
-        const unreadCount = unreadCounts[conversation.id] ?? 0;
-        if (unreadCount <= 0) {
-          return conversation;
-        }
         const baseMetadata =
           conversation.metadata && typeof conversation.metadata === "object"
             ? conversation.metadata
             : {};
+        const serverUnread =
+          typeof (baseMetadata as any)?.unreadCount === "number"
+            ? (baseMetadata as any).unreadCount
+            : null;
+        const clientUnread = unreadCounts[conversation.id] ?? 0;
+        const unreadCount = serverUnread !== null ? serverUnread : clientUnread;
+        if (unreadCount <= 0) {
+          return conversation;
+        }
         return {
           ...conversation,
           metadata: {
@@ -277,6 +286,7 @@ export default function Home() {
   } = useQuery<{ total: number; items: ChatMessage[] }>({
     queryKey: ["/api/conversations", selectedConversationId, "messages"],
     enabled: Boolean(selectedConversationId),
+    refetchInterval: pollingInterval,
   });
 
   const messages = messagesData?.items ?? [];

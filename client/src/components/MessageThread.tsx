@@ -838,6 +838,7 @@ export function MessageThread({
             onSendTemplate={handleTemplateSend}
             templates={templates}
             readyMessages={readyMessages}
+            conversationId={conversation?.id ?? null}
             disabled={isSending || !conversation}
             replyTo={replyContext}
             onClearReply={handleClearReply}

@@ -138,7 +138,7 @@ const getMediaLabel = (media: MessageMedia) => {
 const getStatusIcon = (status: string | null | undefined) => {
   switch (status) {
     case "read":
-      return <CheckCheck className="h-4 w-4 text-primary-foreground" />;
+      return <CheckCheck className="h-4 w-4 text-emerald-700/90" />;
     case "delivered":
       return <CheckCheck className="h-4 w-4 text-primary-foreground/80" />;
     case "sent":

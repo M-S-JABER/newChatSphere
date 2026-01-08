@@ -20,7 +20,7 @@ import {
   type MessageMedia,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, sql, and, inArray, aliasedTable } from "drizzle-orm";
+import { eq, desc, sql, and, inArray, aliasedTable, or } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { pool } from "./db";
@@ -51,6 +51,8 @@ export interface IStorage {
   getConversationById(id: string): Promise<Conversation | undefined>;
   createConversation(conversation: InsertConversation): Promise<Conversation>;
   updateConversationLastAt(id: string): Promise<void>;
+  incrementConversationUnread(id: string, amount?: number): Promise<void>;
+  clearConversationUnread(id: string): Promise<void>;
   toggleConversationArchive(id: string, archived: boolean): Promise<Conversation>;
   
   getMessages(conversationId: string, page?: number, pageSize?: number): Promise<{ items: Array<Message & { replyTo?: ReplySummary | null; senderName?: string | null }>; total: number }>;
@@ -58,6 +60,7 @@ export interface IStorage {
   getMessageById(id: string): Promise<Message | undefined>;
   getMessageWithReplyById(id: string): Promise<(Message & { replyTo?: ReplySummary | null; senderName?: string | null }) | undefined>;
   getMessageByProviderMessageId(providerMessageId: string): Promise<Message | undefined>;
+  updateMessageStatus(id: string, status: string): Promise<Message | undefined>;
   updateMessageMedia(id: string, media: MessageMedia | null): Promise<Message | undefined>;
   deleteMessage(id: string): Promise<{ id: string; conversationId: string } | null>;
   deleteConversation(id: string): Promise<void>;
@@ -118,8 +121,17 @@ export type ReplySummary = {
   createdAt: Date;
 };
 
+const normalizePhone = (phone: string): string => phone.replace(/\D/g, "");
+
 const toSenderLabel = (direction: string): "Customer" | "Agent" => {
   return direction === "inbound" ? "Customer" : "Agent";
+};
+
+const normalizeMetadata = (value: unknown): Record<string, any> => {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, any>;
+  }
+  return {};
 };
 
 const ACTIVITY_MAX_IDLE_MS = Number(process.env.ACTIVITY_MAX_IDLE_MS ?? 5 * 60 * 1000);
@@ -158,10 +170,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getConversationByPhone(phone: string): Promise<Conversation | undefined> {
-    const [conversation] = await db
-      .select()
-      .from(conversations)
-      .where(eq(conversations.phone, phone));
+    const rawPhone = phone?.trim() ?? "";
+    if (!rawPhone) return undefined;
+    const normalized = normalizePhone(rawPhone);
+    const whereClause =
+      normalized.length > 0
+        ? or(
+            eq(conversations.phone, rawPhone),
+            // Match stored numbers with different formatting (e.g. +, spaces).
+            sql`regexp_replace(${conversations.phone}, '\\D', '', 'g') = ${normalized}`,
+          )
+        : eq(conversations.phone, rawPhone);
+    const [conversation] = await db.select().from(conversations).where(whereClause);
     return conversation;
   }
 
@@ -186,6 +206,33 @@ export class DatabaseStorage implements IStorage {
       .update(conversations)
       .set({ lastAt: new Date(), updatedAt: new Date() })
       .where(eq(conversations.id, id));
+  }
+
+  async incrementConversationUnread(id: string, amount: number = 1): Promise<void> {
+    if (!amount || amount <= 0) return;
+    const [conversation] = await db
+      .select({ metadata: conversations.metadata })
+      .from(conversations)
+      .where(eq(conversations.id, id))
+      .limit(1);
+    if (!conversation) return;
+    const metadata = normalizeMetadata(conversation.metadata);
+    const current = typeof metadata.unreadCount === "number" ? metadata.unreadCount : 0;
+    const next = { ...metadata, unreadCount: current + amount };
+    await db.update(conversations).set({ metadata: next, updatedAt: new Date() }).where(eq(conversations.id, id));
+  }
+
+  async clearConversationUnread(id: string): Promise<void> {
+    const [conversation] = await db
+      .select({ metadata: conversations.metadata })
+      .from(conversations)
+      .where(eq(conversations.id, id))
+      .limit(1);
+    if (!conversation) return;
+    const metadata = normalizeMetadata(conversation.metadata);
+    if (metadata.unreadCount === 0 && "unreadCount" in metadata) return;
+    const next = { ...metadata, unreadCount: 0 };
+    await db.update(conversations).set({ metadata: next, updatedAt: new Date() }).where(eq(conversations.id, id));
   }
 
   async toggleConversationArchive(id: string, archived: boolean): Promise<Conversation> {
@@ -325,6 +372,15 @@ export class DatabaseStorage implements IStorage {
       .where(eq(messages.providerMessageId, providerMessageId))
       .limit(1)) as Message[];
     return message;
+  }
+
+  async updateMessageStatus(id: string, status: string): Promise<Message | undefined> {
+    const [updated] = (await db
+      .update(messages)
+      .set({ status })
+      .where(eq(messages.id, id))
+      .returning()) as Message[];
+    return updated;
   }
 
   async updateMessageMedia(id: string, media: MessageMedia | null): Promise<Message | undefined> {

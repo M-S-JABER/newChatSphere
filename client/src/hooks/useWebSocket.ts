@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 
 interface WebSocketMessage {
   event: string;
@@ -23,6 +23,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const shouldReconnectRef = useRef(true);
+  const [isConnected, setIsConnected] = useState(false);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -36,7 +37,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-  console.debug("WebSocket connected");
+        console.debug("WebSocket connected");
+        setIsConnected(true);
         onConnect?.();
       };
 
@@ -51,10 +53,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
       ws.onerror = (error) => {
         console.error("WebSocket error:", error);
+        setIsConnected(false);
       };
 
       ws.onclose = () => {
-  console.debug("WebSocket disconnected");
+        console.debug("WebSocket disconnected");
+        setIsConnected(false);
         onDisconnect?.();
 
         if (shouldReconnectRef.current) {
@@ -79,6 +83,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
     return () => {
       shouldReconnectRef.current = false;
+      setIsConnected(false);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -89,6 +94,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   }, [connect]);
 
   return {
-    isConnected: wsRef.current?.readyState === WebSocket.OPEN,
+    isConnected,
   };
 }

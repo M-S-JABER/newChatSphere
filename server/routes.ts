@@ -151,6 +151,84 @@ function extensionToMediaType(extension: string | null): MessageMedia["type"] {
   return "unknown";
 }
 
+type IncomingStatusUpdate = {
+  providerMessageId: string;
+  status: string;
+  timestamp?: string;
+  recipientId?: string;
+  raw?: any;
+};
+
+const normalizeMessageStatus = (status: string | null | undefined): string | null => {
+  if (!status) return null;
+  const normalized = String(status).trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const shouldUpdateMessageStatus = (current: string | null | undefined, next: string): boolean => {
+  const currentNormalized = normalizeMessageStatus(current);
+  const nextNormalized = normalizeMessageStatus(next);
+
+  if (!nextNormalized) return false;
+  if (!currentNormalized) return true;
+  if (currentNormalized === nextNormalized) return false;
+  if (currentNormalized === "failed") return false;
+
+  if (nextNormalized === "read") return true;
+  if (nextNormalized === "delivered") return currentNormalized !== "read";
+  if (nextNormalized === "sent") return !["delivered", "read"].includes(currentNormalized);
+  if (nextNormalized === "queued") return !["sent", "delivered", "read"].includes(currentNormalized);
+  if (nextNormalized === "failed") return !["delivered", "read"].includes(currentNormalized);
+
+  return true;
+};
+
+const parseMetaStatusUpdates = (payload: any): IncomingStatusUpdate[] => {
+  const updates: IncomingStatusUpdate[] = [];
+
+  if (!payload?.entry) return updates;
+
+  for (const entry of payload.entry) {
+    if (!entry?.changes) continue;
+
+    for (const change of entry.changes) {
+      const statuses = change?.value?.statuses;
+      if (!Array.isArray(statuses)) continue;
+
+      for (const status of statuses) {
+        const rawId =
+          (typeof status?.id === "string" && status.id.trim().length > 0
+            ? status.id
+            : null) ??
+          (typeof status?.message_id === "string" && status.message_id.trim().length > 0
+            ? status.message_id
+            : null) ??
+          (typeof status?.messageId === "string" && status.messageId.trim().length > 0
+            ? status.messageId
+            : null);
+        const providerMessageId = rawId ? rawId.trim() : null;
+        const normalizedStatus = normalizeMessageStatus(status?.status);
+        if (!providerMessageId || !normalizedStatus) continue;
+
+        const timestampSeconds = Number(status?.timestamp);
+        const timestamp = Number.isFinite(timestampSeconds)
+          ? new Date(timestampSeconds * 1000).toISOString()
+          : undefined;
+
+        updates.push({
+          providerMessageId,
+          status: normalizedStatus,
+          timestamp,
+          recipientId: typeof status?.recipient_id === "string" ? status.recipient_id : undefined,
+          raw: status,
+        });
+      }
+    }
+  }
+
+  return updates;
+};
+
 const DEFAULT_TEMPLATE_LANGUAGE = "en_US";
 
 type TemplateRequestInput = {
@@ -955,6 +1033,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       const page = parseInt(req.query.page as string) || 1;
       const pageSize = parseInt(req.query.page_size as string) || 50;
       const result = await storage.getMessages(id, page, pageSize);
+      await storage.clearConversationUnread(id);
       const signedItems = result.items.map((item) => buildSignedMediaUrlsForMessage(item));
       res.json({ ...result, items: signedItems });
     } catch (error: any) {
@@ -1420,8 +1499,9 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       }
 
       const events = provider.parseIncoming(req.body);
+      const statusUpdates = parseMetaStatusUpdates(req.body);
 
-      if (events.length === 0) {
+      if (events.length === 0 && statusUpdates.length === 0) {
         logger.debug(
           { event: "meta_webhook_no_events" },
           "No message events in payload",
@@ -1436,6 +1516,29 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       }
 
       let processedCount = 0;
+      let statusUpdatedCount = 0;
+
+      for (const update of statusUpdates) {
+        const message = await storage.getMessageByProviderMessageId(update.providerMessageId);
+        if (!message || message.direction !== "outbound") {
+          continue;
+        }
+
+        if (!shouldUpdateMessageStatus(message.status, update.status)) {
+          continue;
+        }
+
+        const updated = await storage.updateMessageStatus(message.id, update.status);
+        if (!updated) continue;
+
+        statusUpdatedCount += 1;
+        broadcastMessage("message_status", {
+          id: updated.id,
+          conversationId: updated.conversationId,
+          status: updated.status,
+          providerMessageId: updated.providerMessageId,
+        });
+      }
 
       for (const event of events) {
         if (event.providerMessageId) {
@@ -1494,6 +1597,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         });
 
         await storage.updateConversationLastAt(conversation.id);
+        await storage.incrementConversationUnread(conversation.id);
         const signedMessage = buildSignedMediaUrlsForMessage(message);
         broadcastMessage("message_incoming", signedMessage);
 
@@ -1527,6 +1631,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         {
           event: "meta_webhook_processed",
           messageCount: processedCount,
+          statusCount: statusUpdatedCount,
           durationMs: duration,
         },
         "Meta webhook processed",
@@ -1735,6 +1840,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       } as any);
 
       await storage.updateConversationLastAt(conversation.id);
+      await storage.incrementConversationUnread(conversation.id);
 
       // persist the test webhook event
       await storage.logWebhookEvent({
