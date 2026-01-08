@@ -8,6 +8,7 @@ It features a responsive WhatsApp-inspired interface, secure authentication, mes
 ## 🧭 Table of Contents
 
 - [Overview](#overview)  
+- [Documentation](#documentation)
 - [Architecture](#architecture)  
 - [Installation](#installation)  
 - [Environment Configuration](#environment-configuration)  
@@ -38,6 +39,12 @@ It supports real-time messaging, conversation management, archiving, role-based 
 - PostgreSQL via Drizzle ORM  
 - Docker-ready for deployment  
 - Cloudflare Tunnel compatible for public SSL access  
+
+---
+
+## Documentation
+
+See `docs/INDEX.md` for the full documentation set.
 
 ---
 
