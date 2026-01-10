@@ -129,7 +129,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const [isSending, setIsSending] = useState(false);
     const [templatePanelOpen, setTemplatePanelOpen] = useState(false);
-    const [selectedTemplateName, setSelectedTemplateName] = useState<string | null>(null);
+    const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
     const [templateParamsInput, setTemplateParamsInput] = useState("");
     const [selectedReadyMessageId, setSelectedReadyMessageId] = useState<string | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -273,16 +273,24 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
       attachmentsRef.current = attachments;
     }, [attachments]);
 
-    const availableTemplates = useMemo(
-      () =>
-        templates
-          .map((template) => ({
+    const availableTemplates = useMemo(() => {
+      return templates
+        .map((template) => {
+          const name = typeof template.name === "string" ? template.name.trim() : "";
+          const language = typeof template.language === "string" ? template.language.trim() : "";
+          if (!name) return null;
+          const id = `${name}::${language || "default"}`;
+          const label = language ? `${name} (${language})` : name;
+          return {
             ...template,
-            name: typeof template.name === "string" ? template.name.trim() : "",
-          }))
-          .filter((template) => template.name.length > 0),
-      [templates],
-    );
+            name,
+            language: language || template.language,
+            id,
+            label,
+          };
+        })
+        .filter((template): template is (TemplateCatalogItem & { id: string; label: string }) => Boolean(template));
+    }, [templates]);
 
     const availableReadyMessages = useMemo(
       () =>
@@ -298,17 +306,17 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
 
     useEffect(() => {
       if (availableTemplates.length === 0) {
-        if (selectedTemplateName !== null) {
-          setSelectedTemplateName(null);
+        if (selectedTemplateId !== null) {
+          setSelectedTemplateId(null);
         }
         return;
       }
 
-      const exists = availableTemplates.some((template) => template.name === selectedTemplateName);
+      const exists = availableTemplates.some((template) => template.id === selectedTemplateId);
       if (!exists) {
-        setSelectedTemplateName(availableTemplates[0].name);
+        setSelectedTemplateId(availableTemplates[0].id);
       }
-    }, [availableTemplates, selectedTemplateName]);
+    }, [availableTemplates, selectedTemplateId]);
 
     useEffect(() => {
       if (availableReadyMessages.length === 0) {
@@ -365,7 +373,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
     }, []);
 
     const selectedTemplate =
-      availableTemplates.find((template) => template.name === selectedTemplateName) ??
+      availableTemplates.find((template) => template.id === selectedTemplateId) ??
       availableTemplates[0] ??
       null;
 
@@ -616,16 +624,16 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
                           Template
                         </p>
                         <Select
-                          value={selectedTemplate?.name ?? ""}
-                          onValueChange={(value) => setSelectedTemplateName(value)}
+                          value={selectedTemplate?.id ?? ""}
+                          onValueChange={(value) => setSelectedTemplateId(value)}
                         >
                           <SelectTrigger className="h-9">
                             <SelectValue placeholder="Choose template" />
                           </SelectTrigger>
                           <SelectContent>
                             {availableTemplates.map((template) => (
-                              <SelectItem key={template.name} value={template.name}>
-                                {template.name}
+                              <SelectItem key={template.id} value={template.id}>
+                                {template.label}
                               </SelectItem>
                             ))}
                           </SelectContent>

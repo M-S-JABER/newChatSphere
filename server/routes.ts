@@ -369,16 +369,16 @@ const resolveTemplateMessage = (
 };
 
 type TemplateCatalogItem = {
+  id?: string;
   name: string;
   language?: string;
   description?: string;
   category?: string;
   components?: MetaTemplateMessage["components"];
-};
-
-type TemplateCatalogResponseItem = TemplateCatalogItem & {
   bodyParams?: number;
 };
+
+type TemplateCatalogResponseItem = TemplateCatalogItem;
 
 const countBodyParams = (components?: MetaTemplateMessage["components"]): number => {
   if (!components) return 0;
@@ -387,24 +387,51 @@ const countBodyParams = (components?: MetaTemplateMessage["components"]): number
   return Array.isArray(params) ? params.length : 0;
 };
 
+const normalizeTemplateLanguage = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const normalizeTemplateBodyParams = (
+  value: unknown,
+  components?: MetaTemplateMessage["components"],
+): number => {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  return countBodyParams(components);
+};
+
+const buildTemplateId = (name: string, language?: string): string => {
+  const normalizedLanguage = language?.trim().toLowerCase() || "default";
+  return `${name}::${normalizedLanguage}`;
+};
+
 const normalizeTemplateCatalogItem = (item: unknown): TemplateCatalogResponseItem | null => {
   if (!item || typeof item !== "object") return null;
   const record = item as Record<string, any>;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   if (!name) return null;
 
-  const language = typeof record.language === "string" ? record.language.trim() : undefined;
+  const language = normalizeTemplateLanguage(record.language);
   const description = typeof record.description === "string" ? record.description.trim() : undefined;
   const category = typeof record.category === "string" ? record.category.trim() : undefined;
-  const components = parseTemplateComponents(record.components);
+  const components = parseTemplateComponents(record.components) ?? undefined;
+  const bodyParams = normalizeTemplateBodyParams(record.bodyParams, components);
+  const id =
+    typeof record.id === "string" && record.id.trim().length > 0
+      ? record.id.trim()
+      : buildTemplateId(name, language);
 
   return {
+    id,
     name,
     language,
     description,
     category,
     components,
-    bodyParams: countBodyParams(components),
+    bodyParams,
   };
 };
 
@@ -440,6 +467,20 @@ const loadTemplateCatalog = (): TemplateCatalogResponseItem[] => {
   }
 
   return items;
+};
+
+const TEMPLATE_CATALOG_SETTING_KEY = "templateCatalog";
+
+const getStoredTemplateCatalog = async (): Promise<TemplateCatalogResponseItem[]> => {
+  const stored = await storage.getAppSetting(TEMPLATE_CATALOG_SETTING_KEY);
+  if (!Array.isArray(stored)) return [];
+  return stored
+    .map((item) => normalizeTemplateCatalogItem(item))
+    .filter((item): item is TemplateCatalogResponseItem => Boolean(item));
+};
+
+const setStoredTemplateCatalog = async (items: TemplateCatalogResponseItem[]): Promise<void> => {
+  await storage.setAppSetting(TEMPLATE_CATALOG_SETTING_KEY, items);
 };
 
 // Helper function to create a Meta provider using persisted settings (with env fallback)
@@ -479,6 +520,174 @@ async function createMetaProvider(): Promise<{
 
   return { provider, instance: null };
 }
+
+type RemoteTemplateItem = TemplateCatalogResponseItem & {
+  status?: string;
+};
+
+const resolveMetaWabaIdFromAccounts = async (
+  provider: MetaProvider,
+  phoneNumberId: string,
+): Promise<string | null> => {
+  const token = provider.getAccessToken();
+  if (!token) {
+    throw new Error("Meta access token is not configured.");
+  }
+
+  const normalizedPhoneNumberId = phoneNumberId.trim();
+  const graphVersion = provider.getGraphVersion();
+  const headers = { Authorization: `Bearer ${token}` };
+  let nextUrl: string | null =
+    `https://graph.facebook.com/${graphVersion}/me/whatsapp_business_accounts?fields=id,name&limit=50`;
+  let pageCount = 0;
+  const accounts: Array<{ id: string }> = [];
+
+  while (nextUrl && pageCount < 5) {
+    const response = await fetch(nextUrl, { method: "GET", headers });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed to list WhatsApp accounts (${response.status}): ${body}`);
+    }
+
+    const payload = (await response.json()) as Record<string, any>;
+    if (Array.isArray(payload?.data)) {
+      payload.data
+        .map((entry: any) => (typeof entry?.id === "string" ? { id: entry.id } : null))
+        .filter((entry): entry is { id: string } => Boolean(entry))
+        .forEach((entry) => accounts.push(entry));
+    }
+
+    nextUrl = typeof payload?.paging?.next === "string" ? payload.paging.next : null;
+    pageCount += 1;
+  }
+
+  for (const account of accounts) {
+    let phoneUrl: string | null =
+      `https://graph.facebook.com/${graphVersion}/${account.id}/phone_numbers?fields=id&limit=50`;
+    let phonePageCount = 0;
+
+    while (phoneUrl && phonePageCount < 5) {
+      const response = await fetch(phoneUrl, { method: "GET", headers });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Failed to list phone numbers (${response.status}): ${body}`);
+      }
+
+      const payload = (await response.json()) as Record<string, any>;
+      const matches = Array.isArray(payload?.data)
+        ? payload.data.some((entry: any) => String(entry?.id) === normalizedPhoneNumberId)
+        : false;
+      if (matches) {
+        return account.id;
+      }
+
+      phoneUrl = typeof payload?.paging?.next === "string" ? payload.paging.next : null;
+      phonePageCount += 1;
+    }
+  }
+
+  return null;
+};
+
+const resolveMetaWabaId = async (provider: MetaProvider, phoneNumberId: string): Promise<string> => {
+  const override = process.env.META_WABA_ID?.trim();
+  if (override) {
+    return override;
+  }
+
+  const token = provider.getAccessToken();
+  if (!token) {
+    throw new Error("Meta access token is not configured.");
+  }
+
+  let directError: string | null = null;
+
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/${provider.getGraphVersion()}/${phoneNumberId}?fields=whatsapp_business_account`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, any>;
+      const wabaId =
+        data?.whatsapp_business_account?.id ??
+        data?.whatsapp_business_account_id ??
+        data?.waba_id;
+
+      if (wabaId && typeof wabaId === "string") {
+        return wabaId;
+      }
+    } else {
+      directError = await response.text();
+    }
+  } catch (error: any) {
+    directError = error?.message ?? String(error);
+  }
+
+  const fallbackId = await resolveMetaWabaIdFromAccounts(provider, phoneNumberId);
+  if (fallbackId) {
+    return fallbackId;
+  }
+
+  if (directError) {
+    throw new Error(`Failed to resolve WABA ID: ${directError}`);
+  }
+
+  throw new Error("Unable to resolve WhatsApp Business Account ID. Set META_WABA_ID to override.");
+};
+
+const normalizeRemoteTemplateItem = (item: any): RemoteTemplateItem | null => {
+  const normalized = normalizeTemplateCatalogItem(item);
+  if (!normalized) return null;
+  const status = typeof item?.status === "string" ? item.status.trim() : undefined;
+  return { ...normalized, status };
+};
+
+const fetchMetaTemplates = async (provider: MetaProvider, wabaId: string): Promise<RemoteTemplateItem[]> => {
+  const token = provider.getAccessToken();
+  if (!token) {
+    throw new Error("Meta access token is not configured.");
+  }
+
+  const items: RemoteTemplateItem[] = [];
+  let nextUrl: string | null =
+    `https://graph.facebook.com/${provider.getGraphVersion()}/${wabaId}` +
+    `/message_templates?fields=name,language,category,components,status`;
+  let pageCount = 0;
+
+  while (nextUrl && pageCount < 5) {
+    const response = await fetch(nextUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed to fetch templates (${response.status}): ${body}`);
+    }
+
+    const payload = (await response.json()) as Record<string, any>;
+    if (Array.isArray(payload?.data)) {
+      payload.data
+        .map((entry: any) => normalizeRemoteTemplateItem(entry))
+        .filter((entry): entry is RemoteTemplateItem => Boolean(entry))
+        .forEach((entry) => items.push(entry));
+    }
+
+    nextUrl = typeof payload?.paging?.next === "string" ? payload.paging.next : null;
+    pageCount += 1;
+  }
+
+  return items;
+};
 
 const wsClients = new Set<WebSocket>();
 
@@ -844,6 +1053,162 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
     }
   });
 
+  app.get("/api/admin/templates", requireAdmin, async (_req: Request, res: Response) => {
+    try {
+      const items = await getStoredTemplateCatalog();
+      res.json({ items });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/admin/templates/remote", requireAdmin, async (_req: Request, res: Response) => {
+    try {
+      const { provider, instance } = await createMetaProvider();
+      const phoneNumberId = instance?.phoneNumberId ?? process.env.META_PHONE_NUMBER_ID;
+      if (!phoneNumberId) {
+        return res.status(400).json({ error: "Phone Number ID is required." });
+      }
+
+      const wabaId = await resolveMetaWabaId(provider, phoneNumberId);
+      const remoteItems = await fetchMetaTemplates(provider, wabaId);
+
+      const storedItems = await getStoredTemplateCatalog();
+      const storedIds = new Set(
+        storedItems.map((item) => item.id ?? buildTemplateId(item.name, item.language)),
+      );
+
+      const items = remoteItems.filter((item) => {
+        const id = item.id ?? buildTemplateId(item.name, item.language);
+        return !storedIds.has(id);
+      });
+
+      res.json({ items });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/admin/templates", requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+      if (!name) {
+        return res.status(400).json({ error: "Template name is required." });
+      }
+
+      const language = normalizeTemplateLanguage(req.body?.language);
+      const description = typeof req.body?.description === "string" ? req.body.description.trim() : undefined;
+      const category = typeof req.body?.category === "string" ? req.body.category.trim() : undefined;
+      const components = parseTemplateComponents(req.body?.components);
+      const bodyParams = req.body?.bodyParams;
+
+      const normalized = normalizeTemplateCatalogItem({
+        name,
+        language,
+        description,
+        category,
+        components,
+        bodyParams,
+      });
+
+      if (!normalized) {
+        return res.status(400).json({ error: "Invalid template payload." });
+      }
+
+      const items = await getStoredTemplateCatalog();
+      const exists = items.some((item) => item.id === normalized.id);
+      if (exists) {
+        return res.status(400).json({ error: "Template already exists." });
+      }
+
+      const next = [...items, normalized];
+      await setStoredTemplateCatalog(next);
+      res.status(201).json({ item: normalized });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.patch("/api/admin/templates/:id", requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const items = await getStoredTemplateCatalog();
+      const index = items.findIndex((item) => item.id === id);
+      if (index === -1) {
+        return res.status(404).json({ error: "Template not found." });
+      }
+
+      const current = items[index];
+      const updates: Record<string, any> = {};
+
+      if (typeof req.body?.name === "string") {
+        const trimmed = req.body.name.trim();
+        if (!trimmed) {
+          return res.status(400).json({ error: "Template name cannot be empty." });
+        }
+        updates.name = trimmed;
+      }
+
+      if (req.body?.language !== undefined) {
+        const normalizedLanguage = normalizeTemplateLanguage(req.body.language);
+        updates.language = normalizedLanguage;
+      }
+
+      if (typeof req.body?.description === "string") {
+        updates.description = req.body.description.trim() || undefined;
+      }
+
+      if (typeof req.body?.category === "string") {
+        updates.category = req.body.category.trim() || undefined;
+      }
+
+      if (req.body?.components !== undefined) {
+        updates.components = parseTemplateComponents(req.body.components) ?? undefined;
+      }
+
+      if (req.body?.bodyParams !== undefined) {
+        updates.bodyParams = req.body.bodyParams;
+      }
+
+      const merged = {
+        ...current,
+        ...updates,
+      };
+
+      const normalized = normalizeTemplateCatalogItem(merged);
+      if (!normalized) {
+        return res.status(400).json({ error: "Invalid template updates." });
+      }
+
+      const nextId = normalized.id ?? buildTemplateId(normalized.name, normalized.language);
+      if (nextId !== id && items.some((item) => item.id === nextId)) {
+        return res.status(400).json({ error: "Template with this name and language already exists." });
+      }
+
+      const next = [...items];
+      next[index] = { ...normalized, id: nextId };
+      await setStoredTemplateCatalog(next);
+      res.json({ item: next[index] });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/admin/templates/:id", requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const items = await getStoredTemplateCatalog();
+      const next = items.filter((item) => item.id !== id);
+      if (next.length === items.length) {
+        return res.status(404).json({ error: "Template not found." });
+      }
+      await setStoredTemplateCatalog(next);
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Admin update endpoints
   app.patch('/api/admin/users/:id', requireAdmin, async (req: Request, res: Response) => {
     const { id } = req.params;
@@ -1136,7 +1501,8 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
   app.get("/api/templates", async (_req: Request, res: Response) => {
     try {
-      const items = loadTemplateCatalog();
+      const stored = await getStoredTemplateCatalog();
+      const items = stored.length > 0 ? stored : loadTemplateCatalog();
       res.json({ items });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

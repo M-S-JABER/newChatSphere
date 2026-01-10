@@ -5,7 +5,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { ArrowLeft, ShieldAlert, Copy, Zap, Save, RotateCcw, Globe, Link2, MessageSquare } from "lucide-react";
+import {
+  ArrowLeft,
+  ShieldAlert,
+  Copy,
+  Zap,
+  Save,
+  RotateCcw,
+  Globe,
+  Link2,
+  MessageSquare,
+  FileText,
+  RefreshCcw,
+} from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserMenu } from "@/components/UserMenu";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -16,6 +28,7 @@ import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { apiRequest } from "@/lib/queryClient";
 import { type ReadyMessage } from "@shared/schema";
+import { type TemplateCatalogItem } from "@/types/templates";
 
 interface DefaultInstance {
   id: string;
@@ -35,6 +48,14 @@ interface WebhookConfig {
   path: string;
   updatedAt?: string | null;
 }
+
+interface TemplateCatalogResponse {
+  items: TemplateCatalogItem[];
+}
+
+type RemoteTemplateItem = TemplateCatalogItem & {
+  status?: string;
+};
 
 const DEFAULT_WEBHOOK_PATH = "/webhook/meta";
 
@@ -58,6 +79,17 @@ export default function Settings() {
   const [editingReadyMessageId, setEditingReadyMessageId] = useState<string | null>(null);
   const [editingReadyMessageName, setEditingReadyMessageName] = useState("");
   const [editingReadyMessageBody, setEditingReadyMessageBody] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateLanguage, setTemplateLanguage] = useState("");
+  const [templateDescription, setTemplateDescription] = useState("");
+  const [templateBodyParams, setTemplateBodyParams] = useState("");
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [editingTemplateName, setEditingTemplateName] = useState("");
+  const [editingTemplateLanguage, setEditingTemplateLanguage] = useState("");
+  const [editingTemplateDescription, setEditingTemplateDescription] = useState("");
+  const [editingTemplateBodyParams, setEditingTemplateBodyParams] = useState("");
+  const [importingTemplateId, setImportingTemplateId] = useState<string | null>(null);
   const webhookBaseUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
     try {
@@ -76,6 +108,14 @@ export default function Settings() {
     },
     [webhookBaseUrl],
   );
+
+  const resolveTemplateId = useCallback((template: TemplateCatalogItem) => {
+    const name = typeof template.name === "string" ? template.name.trim() : "";
+    const language = typeof template.language === "string" ? template.language.trim() : "";
+    const id = typeof template.id === "string" ? template.id.trim() : "";
+    if (id) return id;
+    return `${name}::${language || "default"}`;
+  }, []);
 
   const populateInstanceForm = useCallback((data: DefaultInstance | null | undefined) => {
     if (data) {
@@ -127,9 +167,69 @@ export default function Settings() {
     retry: false,
   });
 
+  const templateCatalogQuery = useQuery<TemplateCatalogResponse>({
+    queryKey: ["/api/admin/templates"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/templates");
+      return await res.json();
+    },
+    retry: false,
+  });
+
+  const remoteTemplatesQuery = useQuery<{ items: RemoteTemplateItem[] }>({
+    queryKey: ["/api/admin/templates/remote"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/templates/remote");
+      return await res.json();
+    },
+    retry: false,
+  });
+
   const readyMessages = readyMessagesData?.items ?? [];
+  const templateCatalog = templateCatalogQuery.data?.items ?? [];
+  const remoteTemplates = remoteTemplatesQuery.data?.items ?? [];
+  const templateCatalogError = templateCatalogQuery.error as Error | null;
+  const remoteTemplatesError = remoteTemplatesQuery.error as Error | null;
+  const templateCatalogLoading = templateCatalogQuery.isLoading;
+  const remoteTemplatesLoading = remoteTemplatesQuery.isLoading;
 
   const instance = defaultInstanceData?.instance ?? null;
+
+  const storedTemplates = useMemo(() => {
+    return templateCatalog
+      .map((template) => {
+        const name = typeof template.name === "string" ? template.name.trim() : "";
+        const language = typeof template.language === "string" ? template.language.trim() : "";
+        if (!name) return null;
+        const id = resolveTemplateId(template);
+        return {
+          ...template,
+          id,
+          name,
+          language,
+        };
+      })
+      .filter((template): template is TemplateCatalogItem & { id: string } => Boolean(template))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [resolveTemplateId, templateCatalog]);
+
+  const availableRemoteTemplates = useMemo(() => {
+    return remoteTemplates
+      .map((template) => {
+        const name = typeof template.name === "string" ? template.name.trim() : "";
+        const language = typeof template.language === "string" ? template.language.trim() : "";
+        if (!name) return null;
+        const id = resolveTemplateId(template);
+        return {
+          ...template,
+          id,
+          name,
+          language,
+        };
+      })
+      .filter((template): template is RemoteTemplateItem & { id: string } => Boolean(template))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [remoteTemplates, resolveTemplateId]);
 
   useEffect(() => {
     if (defaultInstanceData === undefined) return;
@@ -265,6 +365,137 @@ export default function Settings() {
     },
   });
 
+  const createTemplateMutation = useMutation({
+    mutationFn: async (payload: {
+      name: string;
+      language?: string;
+      description?: string;
+      bodyParams?: number;
+      category?: string;
+      components?: Array<Record<string, any>>;
+    }) => {
+      const res = await apiRequest("POST", "/api/admin/templates", payload);
+      return await res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates/remote"] });
+      setTemplateName("");
+      setTemplateLanguage("");
+      setTemplateDescription("");
+      setTemplateBodyParams("");
+      setTemplateError(null);
+      toast({
+        title: "Template added",
+        description: "The template is now available in the template panel.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to add template",
+        description: error.message,
+      });
+    },
+  });
+
+  const updateTemplateMutation = useMutation({
+    mutationFn: async (payload: {
+      id: string;
+      updates: {
+        name: string;
+        language?: string;
+        description?: string;
+        bodyParams?: number | null;
+        category?: string;
+      };
+    }) => {
+      const res = await apiRequest("PATCH", `/api/admin/templates/${payload.id}`, payload.updates);
+      return await res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates/remote"] });
+      setEditingTemplateId(null);
+      setEditingTemplateName("");
+      setEditingTemplateLanguage("");
+      setEditingTemplateDescription("");
+      setEditingTemplateBodyParams("");
+      toast({
+        title: "Template updated",
+        description: "Changes saved successfully.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to update template",
+        description: error.message,
+      });
+    },
+  });
+
+  const deleteTemplateMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/admin/templates/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates/remote"] });
+      toast({
+        title: "Template deleted",
+        description: "The template has been removed.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to delete template",
+        description: error.message,
+      });
+    },
+  });
+
+  const importTemplateMutation = useMutation({
+    mutationFn: async (template: RemoteTemplateItem) => {
+      const payload = {
+        name: template.name,
+        language: template.language,
+        description: template.description,
+        category: template.category,
+        bodyParams: template.bodyParams,
+        components: template.components,
+      };
+      const res = await apiRequest("POST", "/api/admin/templates", payload);
+      return await res.json();
+    },
+    onMutate: (template) => {
+      setImportingTemplateId(resolveTemplateId(template));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/templates/remote"] });
+      toast({
+        title: "Template imported",
+        description: "The template is now available in the template panel.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to import template",
+        description: error.message,
+      });
+    },
+    onSettled: () => {
+      setImportingTemplateId(null);
+    },
+  });
+
   const handleInstanceSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (defaultInstanceData === undefined || updateInstanceMutation.isPending) {
@@ -388,6 +619,141 @@ export default function Settings() {
     const confirmed = window.confirm(`Delete "${message.name}"? This cannot be undone.`);
     if (!confirmed) return;
     deleteReadyMessageMutation.mutate(message.id);
+  };
+
+  const parseBodyParamsInput = useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return { value: undefined, error: null };
+    }
+
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return { value: null, error: "Body parameters must be a non-negative number." };
+    }
+
+    return { value: Math.floor(parsed), error: null };
+  }, []);
+
+  const handleTemplateSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedName = templateName.trim();
+    const trimmedLanguage = templateLanguage.trim();
+    const trimmedDescription = templateDescription.trim();
+
+    if (!trimmedName) {
+      setTemplateError("Template name is required.");
+      return;
+    }
+
+    const bodyParamsResult = parseBodyParamsInput(templateBodyParams);
+    if (bodyParamsResult.error) {
+      setTemplateError(bodyParamsResult.error);
+      return;
+    }
+
+    const payload: {
+      name: string;
+      language?: string;
+      description?: string;
+      bodyParams?: number;
+    } = {
+      name: trimmedName,
+    };
+
+    if (trimmedLanguage) {
+      payload.language = trimmedLanguage;
+    }
+
+    if (trimmedDescription) {
+      payload.description = trimmedDescription;
+    }
+
+    if (bodyParamsResult.value !== undefined) {
+      payload.bodyParams = bodyParamsResult.value;
+    }
+
+    setTemplateError(null);
+    createTemplateMutation.mutate(payload);
+  };
+
+  const handleStartEditTemplate = (template: TemplateCatalogItem) => {
+    setEditingTemplateId(resolveTemplateId(template));
+    setEditingTemplateName(template.name ?? "");
+    setEditingTemplateLanguage(template.language ?? "");
+    setEditingTemplateDescription(template.description ?? "");
+    setEditingTemplateBodyParams(
+      template.bodyParams !== undefined && template.bodyParams !== null
+        ? String(template.bodyParams)
+        : "",
+    );
+  };
+
+  const handleCancelEditTemplate = () => {
+    setEditingTemplateId(null);
+    setEditingTemplateName("");
+    setEditingTemplateLanguage("");
+    setEditingTemplateDescription("");
+    setEditingTemplateBodyParams("");
+  };
+
+  const handleSaveTemplate = () => {
+    if (!editingTemplateId) return;
+
+    const trimmedName = editingTemplateName.trim();
+    const trimmedLanguage = editingTemplateLanguage.trim();
+    const trimmedDescription = editingTemplateDescription.trim();
+
+    if (!trimmedName) {
+      toast({
+        variant: "destructive",
+        title: "Missing fields",
+        description: "Template name is required.",
+      });
+      return;
+    }
+
+    const bodyParamsResult = parseBodyParamsInput(editingTemplateBodyParams);
+    if (bodyParamsResult.error) {
+      toast({
+        variant: "destructive",
+        title: "Invalid parameters",
+        description: bodyParamsResult.error,
+      });
+      return;
+    }
+
+    const updates: {
+      name: string;
+      language?: string;
+      description?: string;
+      bodyParams?: number | null;
+    } = {
+      name: trimmedName,
+      language: trimmedLanguage,
+      description: trimmedDescription,
+    };
+
+    if (bodyParamsResult.value !== undefined) {
+      updates.bodyParams = bodyParamsResult.value;
+    }
+
+    updateTemplateMutation.mutate({
+      id: editingTemplateId,
+      updates,
+    });
+  };
+
+  const handleDeleteTemplate = (template: TemplateCatalogItem) => {
+    const templateName = template.name ?? "template";
+    const confirmed = window.confirm(`Delete "${templateName}"? This cannot be undone.`);
+    if (!confirmed) return;
+    const id = resolveTemplateId(template);
+    deleteTemplateMutation.mutate(id);
+  };
+
+  const handleImportTemplate = (template: RemoteTemplateItem) => {
+    importTemplateMutation.mutate(template);
   };
 
   // Redirect non-admin users to home page
@@ -832,6 +1198,295 @@ export default function Settings() {
                             </div>
                           </div>
                         )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Templates
+              </CardTitle>
+              <CardDescription>
+                Manage the templates shown in the template panel and import from your WhatsApp account.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <form onSubmit={handleTemplateSubmit} className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="template-name">Template name</Label>
+                    <Input
+                      id="template-name"
+                      value={templateName}
+                      onChange={(event) => setTemplateName(event.target.value)}
+                      placeholder="e.g. order_update"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="template-language">Language</Label>
+                    <Input
+                      id="template-language"
+                      value={templateLanguage}
+                      onChange={(event) => setTemplateLanguage(event.target.value)}
+                      placeholder="e.g. ar or en_US"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="template-body-params">Body parameters</Label>
+                    <Input
+                      id="template-body-params"
+                      type="number"
+                      min="0"
+                      value={templateBodyParams}
+                      onChange={(event) => setTemplateBodyParams(event.target.value)}
+                      placeholder="0"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Number of body parameters like {"{1}"} and {"{2}"}. Leave blank to auto-detect.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="template-description">Description</Label>
+                    <Textarea
+                      id="template-description"
+                      value={templateDescription}
+                      onChange={(event) => setTemplateDescription(event.target.value)}
+                      placeholder="Optional description for agents"
+                      rows={2}
+                    />
+                  </div>
+                </div>
+                {templateError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{templateError}</AlertDescription>
+                  </Alert>
+                )}
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={createTemplateMutation.isPending}>
+                    {createTemplateMutation.isPending ? "Adding..." : "Add template"}
+                  </Button>
+                </div>
+              </form>
+
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Saved templates</p>
+                  <p className="text-xs text-muted-foreground">
+                    These templates appear in the template panel for agents.
+                  </p>
+                </div>
+
+                {templateCatalogError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{templateCatalogError.message}</AlertDescription>
+                  </Alert>
+                )}
+
+                {templateCatalogLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading templates...</p>
+                ) : storedTemplates.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No templates added yet.</p>
+                ) : (
+                  storedTemplates.map((template) => {
+                    const isEditing = editingTemplateId === template.id;
+                    return (
+                      <div
+                        key={template.id}
+                        className="rounded-lg border border-border/60 bg-background/60 p-4"
+                      >
+                        {isEditing ? (
+                          <div className="space-y-3">
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <div className="space-y-1">
+                                <Label htmlFor={`template-edit-name-${template.id}`}>
+                                  Template name
+                                </Label>
+                                <Input
+                                  id={`template-edit-name-${template.id}`}
+                                  value={editingTemplateName}
+                                  onChange={(event) => setEditingTemplateName(event.target.value)}
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label htmlFor={`template-edit-language-${template.id}`}>
+                                  Language
+                                </Label>
+                                <Input
+                                  id={`template-edit-language-${template.id}`}
+                                  value={editingTemplateLanguage}
+                                  onChange={(event) => setEditingTemplateLanguage(event.target.value)}
+                                />
+                              </div>
+                            </div>
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <div className="space-y-1">
+                                <Label htmlFor={`template-edit-params-${template.id}`}>
+                                  Body parameters
+                                </Label>
+                                <Input
+                                  id={`template-edit-params-${template.id}`}
+                                  type="number"
+                                  min="0"
+                                  value={editingTemplateBodyParams}
+                                  onChange={(event) => setEditingTemplateBodyParams(event.target.value)}
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label htmlFor={`template-edit-description-${template.id}`}>
+                                  Description
+                                </Label>
+                                <Textarea
+                                  id={`template-edit-description-${template.id}`}
+                                  value={editingTemplateDescription}
+                                  onChange={(event) => setEditingTemplateDescription(event.target.value)}
+                                  rows={2}
+                                />
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleCancelEditTemplate}
+                                disabled={updateTemplateMutation.isPending}
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                type="button"
+                                onClick={handleSaveTemplate}
+                                disabled={updateTemplateMutation.isPending}
+                              >
+                                {updateTemplateMutation.isPending ? "Saving..." : "Save"}
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <p className="text-sm font-semibold text-foreground">{template.name}</p>
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                  {template.language && (
+                                    <Badge variant="outline">{template.language}</Badge>
+                                  )}
+                                  {typeof template.bodyParams === "number" && (
+                                    <span>Params: {template.bodyParams}</span>
+                                  )}
+                                  {template.category && (
+                                    <Badge variant="outline">{template.category}</Badge>
+                                  )}
+                                </div>
+                                {template.description && (
+                                  <p className="mt-2 text-sm text-muted-foreground">
+                                    {template.description}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleStartEditTemplate(template)}
+                                  disabled={deleteTemplateMutation.isPending}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => handleDeleteTemplate(template)}
+                                  disabled={deleteTemplateMutation.isPending}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">
+                      Templates on your WhatsApp account
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Not added to this workspace yet.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => remoteTemplatesQuery.refetch()}
+                    disabled={remoteTemplatesLoading}
+                  >
+                    <RefreshCcw className="mr-2 h-4 w-4" />
+                    Refresh
+                  </Button>
+                </div>
+
+                {remoteTemplatesError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{remoteTemplatesError.message}</AlertDescription>
+                  </Alert>
+                )}
+
+                {remoteTemplatesLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading account templates...</p>
+                ) : availableRemoteTemplates.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No additional templates found.</p>
+                ) : (
+                  availableRemoteTemplates.map((template) => {
+                    const isImporting = importingTemplateId === template.id;
+                    return (
+                      <div
+                        key={template.id}
+                        className="rounded-lg border border-border/60 bg-background/60 p-4"
+                      >
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="text-sm font-semibold text-foreground">{template.name}</p>
+                            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                              {template.language && (
+                                <Badge variant="outline">{template.language}</Badge>
+                              )}
+                              {template.status && (
+                                <Badge variant="secondary">{template.status.toUpperCase()}</Badge>
+                              )}
+                              {template.category && (
+                                <Badge variant="outline">{template.category}</Badge>
+                              )}
+                              {typeof template.bodyParams === "number" && (
+                                <span>Params: {template.bodyParams}</span>
+                              )}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleImportTemplate(template)}
+                            disabled={importTemplateMutation.isPending || isImporting}
+                          >
+                            {isImporting ? "Adding..." : "Add template"}
+                          </Button>
+                        </div>
                       </div>
                     );
                   })

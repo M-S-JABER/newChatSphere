@@ -1,4 +1,5 @@
 export type TemplateCatalogItem = {
+  id?: string;
   name: string;
   language?: string;
   description?: string;
