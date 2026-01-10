@@ -46,6 +46,7 @@ const EnvSchema = z.object({
     .default(5000),
   HOST: z.string().optional(),
   LOG_LEVEL: z.enum(logLevels).default("info"),
+  LOG_PRETTY: booleanFromEnv,
   ENFORCE_HTTPS: booleanFromEnv,
   MEDIA_PUBLIC_BASE_URL: z.string().url().optional(),
   PUBLIC_BASE_URL: z.string().url().optional(),
