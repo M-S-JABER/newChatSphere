@@ -255,7 +255,7 @@ export class DatabaseStorage implements IStorage {
         .select()
         .from(messages)
         .where(eq(messages.conversationId, conversationId))
-        .orderBy(messages.createdAt)
+        .orderBy(desc(messages.createdAt))
         .limit(pageSize)
         .offset(offset),
       db
@@ -264,7 +264,7 @@ export class DatabaseStorage implements IStorage {
         .where(eq(messages.conversationId, conversationId)),
     ]);
 
-    const items = itemsRaw as Message[];
+    const items = [...(itemsRaw as Message[])].reverse();
     const totalResult = totalRaw as Array<{ count: number }>;
 
     const replyIds = items
@@ -1158,3 +1158,4 @@ export class DatabaseStorage implements IStorage {
 }
 
 export const storage = new DatabaseStorage();
+
