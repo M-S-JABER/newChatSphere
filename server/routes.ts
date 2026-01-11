@@ -261,6 +261,167 @@ const parseTemplateComponents = (
   return undefined;
 };
 
+const normalizeTemplateComponentType = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const countTemplatePlaceholders = (text: string): number => {
+  let maxIndex = 0;
+  const regex = /\{\{\s*(\d+)\s*\}\}/g;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const index = Number(match[1]);
+    if (Number.isFinite(index) && index > maxIndex) {
+      maxIndex = index;
+    }
+  }
+
+  return maxIndex;
+};
+
+const normalizeTemplateButtonType = (value: unknown): string | null => {
+  const normalized = normalizeTemplateComponentType(value);
+  if (!normalized) return null;
+  return normalized.replace(/\s+/g, "_");
+};
+
+const sanitizeTemplateComponentsForSend = (
+  components?: MetaTemplateMessage["components"],
+): MetaTemplateMessage["components"] | undefined => {
+  if (!components || components.length === 0) return undefined;
+
+  const sanitized = components
+    .map((component) => {
+      if (!component || typeof component !== "object") return null;
+      const type = normalizeTemplateComponentType((component as any).type);
+      if (!type) return null;
+      const parameters = Array.isArray((component as any).parameters)
+        ? (component as any).parameters
+        : null;
+
+      if (!parameters || parameters.length === 0) {
+        return null;
+      }
+
+      const next: Record<string, any> = {
+        type,
+        parameters,
+      };
+
+      if (typeof (component as any).sub_type === "string") {
+        next.sub_type = (component as any).sub_type;
+      }
+
+      if ((component as any).index !== undefined) {
+        next.index = String((component as any).index);
+      }
+
+      return next;
+    })
+    .filter((component): component is MetaTemplateMessage["components"][number] => Boolean(component));
+
+  return sanitized.length > 0 ? sanitized : undefined;
+};
+
+const buildTemplateComponentsFromDefinition = (
+  rawComponents: MetaTemplateMessage["components"] | undefined,
+  bodyParams: string[] | null,
+): { components?: MetaTemplateMessage["components"]; error?: string } => {
+  if (!rawComponents || rawComponents.length === 0) {
+    return { components: applyBodyParamsToComponents(undefined, bodyParams) };
+  }
+
+  const definitionComponents = rawComponents as Array<Record<string, any>>;
+  const sendComponents: MetaTemplateMessage["components"] = [];
+  let headerParamCount = 0;
+  let bodyParamCount = 0;
+  let needsButtonParams = false;
+  let hasCallPermissionRequest = false;
+
+  definitionComponents.forEach((component) => {
+    const type = normalizeTemplateComponentType(component?.type);
+    if (type === "header" && typeof component?.text === "string") {
+      headerParamCount = countTemplatePlaceholders(component.text);
+    }
+    if (type === "body" && typeof component?.text === "string") {
+      bodyParamCount = countTemplatePlaceholders(component.text);
+    }
+    if (type === "call_permission_request" || type === "call_permission") {
+      hasCallPermissionRequest = true;
+    }
+  });
+
+  if (headerParamCount > 0) {
+    return { error: "Template header parameters are not supported yet." };
+  }
+
+  if (bodyParamCount > 0) {
+    if (!bodyParams || bodyParams.length < bodyParamCount) {
+      return {
+        error: `Template requires ${bodyParamCount} body parameter${
+          bodyParamCount === 1 ? "" : "s"
+        }.`,
+      };
+    }
+    sendComponents.push({
+      type: "body",
+      parameters: buildBodyParameters(bodyParams),
+    });
+  }
+
+  if (hasCallPermissionRequest) {
+    sendComponents.push({
+      type: "call_permission_request",
+    });
+  }
+
+  definitionComponents.forEach((component) => {
+    const type = normalizeTemplateComponentType(component?.type);
+    if (type !== "buttons") return;
+    const buttons = Array.isArray(component?.buttons) ? component.buttons : [];
+
+    buttons.forEach((button: any, index: number) => {
+      const buttonType = normalizeTemplateButtonType(button?.type);
+      if (!buttonType) return;
+
+      if (buttonType === "quick_reply") {
+        const payload =
+          typeof button?.payload === "string" && button.payload.trim().length > 0
+            ? button.payload.trim()
+            : typeof button?.text === "string" && button.text.trim().length > 0
+            ? button.text.trim()
+            : `button_${index + 1}`;
+
+        sendComponents.push({
+          type: "button",
+          sub_type: "quick_reply",
+          index: String(index),
+          parameters: [{ type: "payload", payload }],
+        });
+        return;
+      }
+
+      if (buttonType === "url") {
+        const url = typeof button?.url === "string" ? button.url : "";
+        if (countTemplatePlaceholders(url) > 0) {
+          needsButtonParams = true;
+        }
+      }
+    });
+  });
+
+  if (needsButtonParams) {
+    return { error: "Template has URL button parameters that are not supported yet." };
+  }
+
+  return {
+    components: sendComponents.length > 0 ? sendComponents : undefined,
+  };
+};
+
 const parseTemplateParamsValue = (value: unknown): string[] | null => {
   if (Array.isArray(value)) {
     const normalized = value.map((item) => String(item)).filter((item) => item.trim().length > 0);
@@ -328,7 +489,7 @@ const applyBodyParamsToComponents = (
 const resolveTemplateMessage = (
   templateInput: TemplateRequestInput | string | null | undefined,
   bodyParams?: string[] | null,
-): MetaTemplateMessage | null => {
+): { message: MetaTemplateMessage | null; error?: string } => {
   const template =
     typeof templateInput === "string"
       ? ({ name: templateInput } satisfies TemplateRequestInput)
@@ -339,7 +500,7 @@ const resolveTemplateMessage = (
       ? template.name.trim()
       : process.env.META_TEMPLATE_NAME?.trim();
 
-  if (!name) return null;
+  if (!name) return { message: null };
 
   const templateLanguage = template?.language;
   const languageCode =
@@ -353,8 +514,26 @@ const resolveTemplateMessage = (
 
   const componentsFromRequest = parseTemplateComponents(template?.components);
   const componentsFromEnv = parseTemplateComponents(process.env.META_TEMPLATE_COMPONENTS);
-  const baseComponents = componentsFromRequest ?? componentsFromEnv;
-  const components = applyBodyParamsToComponents(baseComponents, bodyParams);
+  const rawComponents = componentsFromRequest ?? componentsFromEnv;
+
+  const isSendPayload =
+    Array.isArray(rawComponents) &&
+    rawComponents.some(
+      (component: any) => Array.isArray(component?.parameters) || component?.sub_type,
+    );
+
+  const { components, error } = isSendPayload
+    ? {
+        components: applyBodyParamsToComponents(
+          sanitizeTemplateComponentsForSend(rawComponents) ?? undefined,
+          bodyParams ?? null,
+        ),
+      }
+    : buildTemplateComponentsFromDefinition(rawComponents, bodyParams ?? null);
+
+  if (error) {
+    return { message: null, error };
+  }
 
   const language =
     templateLanguage && typeof templateLanguage === "object"
@@ -362,9 +541,11 @@ const resolveTemplateMessage = (
       : { code: languageCode };
 
   return {
-    name,
-    language,
-    components,
+    message: {
+      name,
+      language,
+      components,
+    },
   };
 };
 
@@ -382,9 +563,19 @@ type TemplateCatalogResponseItem = TemplateCatalogItem;
 
 const countBodyParams = (components?: MetaTemplateMessage["components"]): number => {
   if (!components) return 0;
-  const bodyComponent = components.find((component) => component?.type === "body");
+  const bodyComponent = components.find((component) => {
+    const type = normalizeTemplateComponentType((component as any)?.type);
+    return type === "body";
+  }) as Record<string, any> | undefined;
+  if (!bodyComponent) return 0;
   const params = bodyComponent?.parameters;
-  return Array.isArray(params) ? params.length : 0;
+  if (Array.isArray(params)) {
+    return params.length;
+  }
+  if (typeof bodyComponent.text === "string") {
+    return countTemplatePlaceholders(bodyComponent.text);
+  }
+  return 0;
 };
 
 const normalizeTemplateLanguage = (value: unknown): string | undefined => {
@@ -397,10 +588,15 @@ const normalizeTemplateBodyParams = (
   value: unknown,
   components?: MetaTemplateMessage["components"],
 ): number => {
+  const computed = countBodyParams(components);
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return Math.floor(value);
+    const floored = Math.floor(value);
+    if (floored === 0 && computed > 0) {
+      return computed;
+    }
+    return floored;
   }
-  return countBodyParams(components);
+  return computed;
 };
 
 const buildTemplateId = (name: string, language?: string): string => {
@@ -1580,9 +1776,15 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
       const recipientPhone = conversation.phone;
       const resolvedTemplateParams = wantsTemplate ? resolveTemplateParams(templateParams, body ?? null) : null;
-      const templateMessage = wantsTemplate
+      const templateResolution = wantsTemplate
         ? resolveTemplateMessage(template, resolvedTemplateParams)
-        : null;
+        : { message: null as MetaTemplateMessage | null };
+
+      const templateMessage = templateResolution.message;
+
+      if (wantsTemplate && templateResolution.error) {
+        return res.status(400).json({ error: templateResolution.error });
+      }
 
       if (wantsTemplate && !templateMessage) {
         return res.status(400).json({
