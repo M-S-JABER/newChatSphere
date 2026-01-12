@@ -203,7 +203,7 @@ export default function Home() {
   }>({
     queryKey: ["/api/conversations", { archived: showArchived }],
     queryFn: async () => {
-      const res = await fetch(`/api/conversations?archived=${showArchived}`, {
+      const res = await fetch(`/api/conversations?archived=${showArchived}&page_size=all`, {
         credentials: "include",
       });
       if (!res.ok) throw new Error(await res.text());

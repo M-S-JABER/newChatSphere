@@ -146,17 +146,26 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async getConversations(page: number = 1, pageSize: number = 20, archived: boolean = false): Promise<{ items: Conversation[]; total: number }> {
-    const offset = (page - 1) * pageSize;
-    
+  async getConversations(
+    page: number = 1,
+    pageSize: number = 20,
+    archived: boolean = false
+  ): Promise<{ items: Conversation[]; total: number }> {
+    const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+    const safePageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 0;
+    const offset = safePageSize > 0 ? (safePage - 1) * safePageSize : 0;
+
+    const listQuery = db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.archived, archived))
+      .orderBy(desc(conversations.lastAt), desc(conversations.createdAt));
+
+    const listPromise =
+      safePageSize > 0 ? listQuery.limit(safePageSize).offset(offset) : listQuery;
+
     const [items, totalResult] = await Promise.all([
-      db
-        .select()
-        .from(conversations)
-        .where(eq(conversations.archived, archived))
-        .orderBy(desc(conversations.lastAt), desc(conversations.createdAt))
-        .limit(pageSize)
-        .offset(offset),
+      listPromise,
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(conversations)

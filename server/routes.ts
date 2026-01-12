@@ -1614,8 +1614,15 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
   app.get("/api/conversations", async (req: Request, res: Response) => {
     try {
-      const page = parseInt(req.query.page as string) || 1;
-      const pageSize = parseInt(req.query.page_size as string) || 20;
+      const rawPage = typeof req.query.page === "string" ? req.query.page : "";
+      const rawPageSize = typeof req.query.page_size === "string" ? req.query.page_size : "";
+      const page = Number.isFinite(Number(rawPage)) ? parseInt(rawPage, 10) : 1;
+      const pageSize =
+        rawPageSize === "all"
+          ? 0
+          : Number.isFinite(Number(rawPageSize))
+          ? parseInt(rawPageSize, 10)
+          : 20;
       const archived = req.query.archived === "true";
       const result = await storage.getConversations(page, pageSize, archived);
       res.json(result);
