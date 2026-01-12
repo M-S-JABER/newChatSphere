@@ -30,7 +30,7 @@ type ConversationListProps = {
   onArchive?: (id: string, archived: boolean) => void;
   onArchiveAll?: (conversationIds: string[]) => void;
   isArchivingAll?: boolean;
-  onCreateConversation?: (payload: { phone: string; body?: string }) => void;
+  onCreateConversation?: (payload: { phone: string }) => void;
   pinnedConversationIds?: string[];
   onTogglePin?: (conversation: Conversation, willPin: boolean) => void;
   maxPinned?: number;

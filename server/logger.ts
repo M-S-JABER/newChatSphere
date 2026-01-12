@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import pino from "pino";
-import pinoPretty from "pino-pretty";
 import pinoHttp from "pino-http";
+import signale from "signale";
 import { env } from "../validate-env";
 
 const isProduction = env.NODE_ENV === "production";
@@ -198,20 +198,55 @@ const formatPrettyMessage = (log: LogRecord, messageKey: string) => {
   return formatMultiline(lines);
 };
 
-const prettyStream = shouldPrettyPrint
-  ? pinoPretty({
-      colorize: true,
-      translateTime: "SYS:HH:MM:ss",
-      ignore:
-        "pid,hostname,req,res,requestPath,service,event,path,durationMs,responseTime,messageCount,statusCount,err,error",
-      singleLine: false,
-      levelFirst: true,
-      hideObject: true,
-      messageFormat: formatPrettyMessage as any,
-    })
-  : undefined;
+const resolveSignaleLevel = (level: unknown): string => {
+  if (typeof level === "string" && level.trim()) {
+    const normalized = level.trim().toLowerCase();
+    if (["debug", "info", "warn", "error"].includes(normalized)) return normalized;
+    if (normalized === "fatal") return "error";
+    if (normalized === "trace") return "debug";
+    return "info";
+  }
+  if (typeof level === "number") {
+    if (level >= 50) return "error";
+    if (level >= 40) return "warn";
+    if (level >= 30) return "info";
+    return "debug";
+  }
+  return "info";
+};
 
-const loggerDestination = prettyStream ?? pino.destination(1);
+const writeToSignale = (level: string, message: string) => {
+  const target =
+    typeof (signale as any)[level] === "function"
+      ? (signale as any)[level]
+      : typeof (signale as any).info === "function"
+      ? (signale as any).info
+      : (signale as any).log;
+  target.call(signale, message);
+};
+
+const signaleStream = {
+  write(chunk: string | Buffer) {
+    const raw = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    const line = raw.trim();
+    if (!line) return;
+
+    try {
+      const parsed = JSON.parse(line) as LogRecord;
+      const level = resolveSignaleLevel(parsed.level);
+      const message = formatPrettyMessage(parsed, "msg");
+      writeToSignale(level, message);
+    } catch {
+      writeToSignale("info", line);
+    }
+  },
+};
+
+if (shouldPrettyPrint && typeof (signale as any).config === "function") {
+  (signale as any).config({ displayTimestamp: true, displayDate: false });
+}
+
+const loggerDestination = shouldPrettyPrint ? (signaleStream as any) : pino.destination(1);
 
 export const logger = pino(
   {

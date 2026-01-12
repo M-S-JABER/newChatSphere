@@ -480,27 +480,20 @@ export default function Home() {
   });
 
   const createConversationMutation = useMutation({
-    mutationFn: async ({ phone, body }: { phone: string; body?: string }) => {
+    mutationFn: async ({ phone }: { phone: string }) => {
       const res = await apiRequest("POST", "/api/conversations", { phone });
       return res.json();
     },
-    onSuccess: (data: any, variables) => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
       if (data.conversation?.id) {
+        if (showArchived) {
+          setShowArchived(false);
+        }
         setSelectedConversationId(data.conversation.id);
         if (!isTablet) {
           setActiveMobilePanel("conversation");
         }
-      }
-      const trimmedBody = variables.body?.trim();
-      const shouldSendTemplate = Boolean(data?.created) || Boolean(trimmedBody);
-      if (shouldSendTemplate && data.conversation?.id) {
-        sendMessageMutation.mutate({
-          to: data.conversation.phone ?? variables.phone,
-          body: trimmedBody || undefined,
-          conversationId: data.conversation.id,
-          messageType: "template",
-        });
       }
     },
     onError: (error: Error) => {

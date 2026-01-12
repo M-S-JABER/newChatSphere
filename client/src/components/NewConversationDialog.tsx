@@ -11,12 +11,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { MessageSquarePlus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface NewConversationDialogProps {
-  onCreateConversation: (payload: { phone: string; body?: string }) => void;
+  onCreateConversation: (payload: { phone: string }) => void;
   triggerClassName?: string;
   showLabel?: boolean;
 }
@@ -28,7 +27,6 @@ export function NewConversationDialog({
 }: NewConversationDialogProps) {
   const [open, setOpen] = useState(false);
   const [phone, setPhone] = useState("964");
-  const [message, setMessage] = useState("");
   const isValidPhone = /^\d{13,15}$/.test(phone.trim());
 
   const handleSubmit = (event: React.FormEvent) => {
@@ -40,14 +38,10 @@ export function NewConversationDialog({
       return;
     }
 
-    const trimmedMessage = message.trim();
-
     onCreateConversation({
       phone: trimmed,
-      body: trimmedMessage.length > 0 ? trimmedMessage : undefined,
     });
     setPhone("964");
-    setMessage("");
     setOpen(false);
   };
 
@@ -68,7 +62,7 @@ export function NewConversationDialog({
           <DialogHeader>
             <DialogTitle>New Conversation</DialogTitle>
             <DialogDescription>
-              Enter a phone number to start a new WhatsApp conversation. A template message will be sent to begin the chat.
+              Enter a phone number to start a new WhatsApp conversation.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -85,19 +79,6 @@ export function NewConversationDialog({
               />
               <p className="text-xs text-muted-foreground">
                 Country code is required. Default is 964. Minimum 10 digits after the 964 sign.
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="message">Message (optional)</Label>
-              <Textarea
-                id="message"
-                placeholder="Optional template parameter"
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                data-testid="input-initial-message"
-              />
-              <p className="text-xs text-muted-foreground">
-                If provided, this will be used as the first template parameter.
               </p>
             </div>
           </div>

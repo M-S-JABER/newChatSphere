@@ -439,6 +439,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
       () => countUrlButtonParams(selectedTemplate?.components as Array<Record<string, any>> | undefined),
       [selectedTemplate?.components],
     );
+    const showTemplateParams = expectedParamCount > 0 || expectedUrlParamCount > 0;
+    const templateGridClass = showTemplateParams
+      ? "grid gap-3 md:grid-cols-[1.2fr_1.6fr_auto] md:items-end"
+      : "grid gap-3 md:grid-cols-[1.2fr_auto] md:items-end";
     const hasRequiredParams =
       expectedParamCount === 0 || templateParams.length >= expectedParamCount;
     const hasRequiredUrlParams =
@@ -541,10 +545,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
       setErrors([]);
       setIsSending(true);
       try {
+        const bodyParamsToSend = expectedParamCount > 0 ? templateParams : [];
+        const urlParamsToSend = expectedUrlParamCount > 0 ? templateUrlParams : [];
         await onSendTemplate({
           template: selectedTemplate,
-          params: templateParams,
-          buttonParams: templateUrlParams,
+          params: bodyParamsToSend,
+          buttonParams: urlParamsToSend,
           replyToMessageId: replyTo?.id,
         });
         onClearReply?.();
@@ -689,7 +695,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
               <div className="flex flex-col gap-4">
                 {availableTemplates.length > 0 && (
                   <div className="flex flex-col gap-3">
-                    <div className="grid gap-3 md:grid-cols-[1.2fr_1.6fr_auto] md:items-end">
+                    <div className={templateGridClass}>
                       <div className="space-y-1">
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                           Template
@@ -715,58 +721,60 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
                           </p>
                         )}
                       </div>
-                      <div className="space-y-1">
+                      {showTemplateParams && (
                         <div className="space-y-1">
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Body parameters
-                          </p>
-                          <Input
-                            value={templateParamsInput}
-                            onChange={(event) => setTemplateParamsInput(event.target.value)}
-                            placeholder='["name","order"] or single value'
-                            className="h-9"
-                            disabled={!selectedTemplate || disabled}
-                          />
-                          <p className="text-[11px] text-muted-foreground">
-                            {selectedTemplate?.bodyParams
-                              ? `Expected ${selectedTemplate.bodyParams} parameter${
-                                  selectedTemplate.bodyParams === 1 ? "" : "s"
-                                }. Use JSON array for multiple values.`
-                              : "Use JSON array for multiple values."}
-                          </p>
-                          {expectedParamCount > 0 && templateParams.length < expectedParamCount && (
-                            <p className="text-[11px] text-destructive">
-                              Missing {expectedParamCount - templateParams.length} parameter
-                              {expectedParamCount - templateParams.length === 1 ? "" : "s"}.
-                            </p>
+                          {expectedParamCount > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Body parameters
+                              </p>
+                              <Input
+                                value={templateParamsInput}
+                                onChange={(event) => setTemplateParamsInput(event.target.value)}
+                                placeholder='["name","order"] or single value'
+                                className="h-9"
+                                disabled={!selectedTemplate || disabled}
+                              />
+                              <p className="text-[11px] text-muted-foreground">
+                                {`Expected ${expectedParamCount} parameter${
+                                  expectedParamCount === 1 ? "" : "s"
+                                }. Use JSON array for multiple values.`}
+                              </p>
+                              {templateParams.length < expectedParamCount && (
+                                <p className="text-[11px] text-destructive">
+                                  Missing {expectedParamCount - templateParams.length} parameter
+                                  {expectedParamCount - templateParams.length === 1 ? "" : "s"}.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          {expectedUrlParamCount > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                URL parameters
+                              </p>
+                              <Input
+                                value={templateUrlParamsInput}
+                                onChange={(event) => setTemplateUrlParamsInput(event.target.value)}
+                                placeholder='["link"] or single value'
+                                className="h-9"
+                                disabled={!selectedTemplate || disabled}
+                              />
+                              <p className="text-[11px] text-muted-foreground">
+                                {`Expected ${expectedUrlParamCount} URL parameter${
+                                  expectedUrlParamCount === 1 ? "" : "s"
+                                } for button links.`}
+                              </p>
+                              {templateUrlParams.length < expectedUrlParamCount && (
+                                <p className="text-[11px] text-destructive">
+                                  Missing {expectedUrlParamCount - templateUrlParams.length} URL parameter
+                                  {expectedUrlParamCount - templateUrlParams.length === 1 ? "" : "s"}.
+                                </p>
+                              )}
+                            </div>
                           )}
                         </div>
-                        {expectedUrlParamCount > 0 && (
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              URL parameters
-                            </p>
-                            <Input
-                              value={templateUrlParamsInput}
-                              onChange={(event) => setTemplateUrlParamsInput(event.target.value)}
-                              placeholder='["link"] or single value'
-                              className="h-9"
-                              disabled={!selectedTemplate || disabled}
-                            />
-                            <p className="text-[11px] text-muted-foreground">
-                              {`Expected ${expectedUrlParamCount} URL parameter${
-                                expectedUrlParamCount === 1 ? "" : "s"
-                              } for button links.`}
-                            </p>
-                            {templateUrlParams.length < expectedUrlParamCount && (
-                              <p className="text-[11px] text-destructive">
-                                Missing {expectedUrlParamCount - templateUrlParams.length} URL parameter
-                                {expectedUrlParamCount - templateUrlParams.length === 1 ? "" : "s"}.
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                      )}
                       <Button
                         type="button"
                         variant="secondary"

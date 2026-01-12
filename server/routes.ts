@@ -1682,6 +1682,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
       let conversation = await storage.getConversationByPhone(trimmedPhone);
       let created = false;
+      let unarchived = false;
 
       if (!conversation) {
         conversation = await storage.createConversation({
@@ -1690,9 +1691,12 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
           createdByUserId: req.user?.id ?? null,
         });
         created = true;
+      } else if (conversation.archived) {
+        conversation = await storage.toggleConversationArchive(conversation.id, false);
+        unarchived = true;
       }
 
-      res.json({ conversation, created });
+      res.json({ conversation, created, unarchived });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
