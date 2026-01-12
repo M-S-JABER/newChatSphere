@@ -64,7 +64,7 @@ export class MetaProvider implements IWhatsAppProvider {
     this.graphVersion = graphVersion || process.env.META_GRAPH_VERSION || "v19.0";
 
     if (!this.token || !this.phoneNumberId) {
-      console.warn("Meta credentials not configured. Sending messages will fail.");
+      logger.warn("Meta credentials not configured. Sending messages will fail.");
     }
   }
 
@@ -221,7 +221,7 @@ export class MetaProvider implements IWhatsAppProvider {
   verifyWebhookSignature(request: any, rawBody: string): boolean {
     const signature = request.headers?.["x-hub-signature-256"];
     if (!signature) {
-      console.warn("Missing X-Hub-Signature-256 header");
+      logger.warn("Missing X-Hub-Signature-256 header");
       return !this.appSecret;
     }
 
@@ -242,7 +242,7 @@ export class MetaProvider implements IWhatsAppProvider {
         Buffer.from(expectedSignature)
       );
     } catch (error) {
-      console.error("Meta signature verification error:", error);
+      logger.error({ err: error }, "Meta signature verification error");
       return false;
     }
   }

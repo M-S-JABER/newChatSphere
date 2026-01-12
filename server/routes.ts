@@ -165,6 +165,14 @@ const normalizeMessageStatus = (status: string | null | undefined): string | nul
   return normalized.length > 0 ? normalized : null;
 };
 
+const summarizeText = (value: string | null | undefined, maxLength = 160): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxLength - 3))}...`;
+};
+
 const shouldUpdateMessageStatus = (current: string | null | undefined, next: string): boolean => {
   const currentNormalized = normalizeMessageStatus(current);
   const nextNormalized = normalizeMessageStatus(next);
@@ -1157,7 +1165,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       const updated = await storage.getDefaultWhatsappInstance();
       res.json({ instance: toInstanceResponse(updated) });
     } catch (error: any) {
-      console.error("Failed to update default WhatsApp instance:", error);
+      logger.error({ err: error }, "Failed to update default WhatsApp instance");
       res.status(500).json({ error: error.message });
     }
   });
@@ -1859,14 +1867,15 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         replyToProviderMessageId = messageTarget.providerMessageId ?? null;
       }
 
-      console.info(
-        "message_send_attempt",
-        JSON.stringify({
+      logger.debug(
+        {
+          event: "message_send_attempt",
           conversationId: conversation.id,
           replyToMessageId: replyToMessageId ?? null,
           hasMedia: Boolean(media_url),
           messageType: wantsTemplate ? "template" : "text",
-        }),
+        },
+        "Message send attempt",
       );
 
       const relativeMediaPath = media_url ? extractRelativeMediaPath(media_url) : null;
@@ -1921,6 +1930,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       const { provider } = await createMetaProvider();
       let providerMessageId: string | null = null;
       let status: string = "sent";
+      let providerErrorMessage: string | null = null;
       const providerMediaPath = relativeMediaPath ? buildSignedMediaPath(relativeMediaPath) : media_url ?? undefined;
       const storedBody = wantsTemplate
         ? body && body.trim().length > 0
@@ -1952,7 +1962,11 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
           providerMessageId = providerResp.id || null;
         }
       } catch (providerError: any) {
-        console.warn("Failed to send via provider, saving locally:", providerError.message);
+        providerErrorMessage = providerError?.message ?? "Failed to send via provider.";
+        logger.debug(
+          { event: "message_provider_failed", error: providerErrorMessage },
+          "Failed to send via provider, saving locally",
+        );
         status = "failed";
       }
 
@@ -1974,6 +1988,25 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         sentByUserId: req.user?.id ?? null,
       } as any);
 
+      const outgoingLogPayload = {
+        event: status === "failed" ? "message_outgoing_failed" : "message_outgoing",
+        conversationId: conversation.id,
+        messageId: message.id,
+        to: recipientPhone,
+        status,
+        messageType: wantsTemplate ? "template" : "text",
+        templateName: wantsTemplate ? templateMessage?.name : undefined,
+        textPreview: wantsTemplate ? undefined : summarizeText(body ?? null),
+        hasMedia: Boolean(media_url),
+        error: providerErrorMessage ?? undefined,
+      };
+
+      if (status === "failed") {
+        logger.warn(outgoingLogPayload, "Message failed");
+      } else {
+        logger.info(outgoingLogPayload, "Message sent");
+      }
+
       await storage.updateConversationLastAt(conversation.id);
 
       const messageWithReply = await storage.getMessageWithReplyById(message.id);
@@ -1983,14 +2016,15 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
       broadcastMessage("message_outgoing", payload);
 
-      console.info(
-        "message_sent_reply",
-        JSON.stringify({
+      logger.debug(
+        {
+          event: "message_sent_reply",
           messageId: message.id,
           conversationId: conversation.id,
           replyToMessageId: replyToMessageId ?? null,
           validReply: Boolean(replyTarget),
-        }),
+        },
+        "Message reply info",
       );
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -2028,7 +2062,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         "";
 
       if (!expectedToken) {
-        console.warn("Webhook verification attempted but no verify token is configured.");
+        logger.warn("Webhook verification attempted but no verify token is configured.");
         await storage.logWebhookEvent({
           headers: req.headers,
           query: req.query,
@@ -2043,7 +2077,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       }
 
       if (verifyToken !== expectedToken) {
-        console.warn(
+        logger.warn(
           `Webhook verification failed: provided token "${verifyToken}" does not match configured token.`
         );
         await storage.logWebhookEvent({
@@ -2063,7 +2097,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
       });
       res.status(200).send(challenge);
     } catch (error: any) {
-      console.error("Webhook verification error:", error);
+      logger.error({ err: error }, "Webhook verification error");
       await storage.logWebhookEvent({
         headers: req.headers,
         query: req.query,
@@ -2211,6 +2245,19 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
           replyToMessageId: replyToId,
         } as any);
         processedCount += 1;
+
+        logger.info(
+          {
+            event: "message_incoming",
+            conversationId: conversation.id,
+            messageId: message.id,
+            from: event.from,
+            textPreview: summarizeText(event.body ?? null),
+            hasMedia: Boolean(event.media),
+            providerMessageId: event.providerMessageId ?? undefined,
+          },
+          "Incoming message",
+        );
 
         await storage.logWebhookEvent({
           headers: req.headers,
@@ -2381,7 +2428,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         }
       });
     } catch (error: any) {
-      console.error("Webhook status error:", error);
+      logger.error({ err: error }, "Webhook status error");
       res.status(500).json({ error: error.message });
     }
   });
@@ -2477,7 +2524,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
       res.json({ ok: true, message });
     } catch (error: any) {
-      console.error("Test webhook error:", error);
+      logger.error({ err: error }, "Test webhook error");
       res.status(500).json({ error: error.message });
     }
   });
@@ -2487,16 +2534,16 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
   wss.on('connection', (ws: WebSocket) => {
-    console.debug('WebSocket client connected');
+    logger.debug({ event: "ws_connected" }, "WebSocket client connected");
     wsClients.add(ws);
 
     ws.on('close', () => {
-      console.debug('WebSocket client disconnected');
+      logger.debug({ event: "ws_disconnected" }, "WebSocket client disconnected");
       wsClients.delete(ws);
     });
 
     ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
+      logger.error({ err: error, event: "ws_error" }, "WebSocket error");
       wsClients.delete(ws);
     });
   });

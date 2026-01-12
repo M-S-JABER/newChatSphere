@@ -7,10 +7,136 @@ import { env } from "../validate-env";
 const isProduction = env.NODE_ENV === "production";
 const hasPrettyEnv = Object.prototype.hasOwnProperty.call(process.env, "LOG_PRETTY");
 const shouldPrettyPrint = hasPrettyEnv ? env.LOG_PRETTY : !isProduction;
+const logFocus = env.LOG_FOCUS ?? "essential";
 
 type LogRecord = Record<string, any>;
 
+const ESSENTIAL_EVENTS = new Set([
+  "message_incoming",
+  "message_outgoing",
+  "message_outgoing_failed",
+  "auth_login",
+  "auth_login_failed",
+  "auth_logout",
+  "server_started",
+]);
+
+const formatMultiline = (lines: string[]) =>
+  lines.length > 1 ? `${lines[0]}\n  ${lines.slice(1).join("\n  ")}` : lines[0];
+
+const getStringValue = (value: unknown): string => {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+};
+
+const getPreview = (value: unknown, maxLength = 160): string => {
+  const text = getStringValue(value);
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+};
+
+const appendErrorLines = (lines: string[], log: LogRecord) => {
+  const error = (log.err as LogRecord | string | undefined) ?? (log.error as LogRecord | string | undefined);
+  if (!error) return;
+  const errorMessage =
+    typeof error === "string"
+      ? error
+      : typeof error.message === "string"
+      ? error.message
+      : "";
+  const errorCode =
+    typeof error === "object" && error && typeof (error as any).code === "string"
+      ? String((error as any).code)
+      : "";
+  const errorParts = [errorMessage, errorCode ? `code=${errorCode}` : ""].filter(Boolean);
+  if (errorParts.length > 0) {
+    lines.push(`error: ${errorParts.join(" | ")}`);
+  }
+};
+
+const formatEssentialEvent = (log: LogRecord): string | null => {
+  const event = getStringValue(log.event);
+  if (!event) return null;
+
+  const titles: Record<string, string> = {
+    message_incoming: "📥 Incoming message",
+    message_outgoing: "📤 Outgoing message",
+    message_outgoing_failed: "❌ Message failed",
+    auth_login: "🔐 Login",
+    auth_login_failed: "🚫 Login failed",
+    auth_logout: "🔓 Logout",
+    server_started: "🚀 Server started",
+  };
+
+  const title = titles[event];
+  if (!title) return null;
+
+  const lines: string[] = [title];
+
+  if (event === "message_incoming") {
+    const from = getStringValue(log.from || log.phone);
+    const conversationId = getStringValue(log.conversationId);
+    const messageId = getStringValue(log.messageId);
+    const textPreview = getPreview(log.textPreview ?? log.body);
+    if (from) lines.push(`from: ${from}`);
+    if (conversationId) lines.push(`conversation: ${conversationId}`);
+    if (messageId) lines.push(`message: ${messageId}`);
+    if (textPreview) lines.push(`text: ${textPreview}`);
+    if (typeof log.hasMedia === "boolean") {
+      lines.push(`media: ${log.hasMedia ? "yes" : "no"}`);
+    }
+  }
+
+  if (event === "message_outgoing" || event === "message_outgoing_failed") {
+    const to = getStringValue(log.to || log.phone);
+    const conversationId = getStringValue(log.conversationId);
+    const messageId = getStringValue(log.messageId);
+    const status = getStringValue(log.status);
+    const messageType = getStringValue(log.messageType);
+    const templateName = getStringValue(log.templateName);
+    const textPreview = getPreview(log.textPreview ?? log.body);
+    if (to) lines.push(`to: ${to}`);
+    if (conversationId) lines.push(`conversation: ${conversationId}`);
+    if (messageId) lines.push(`message: ${messageId}`);
+    if (status) lines.push(`status: ${status}`);
+    if (messageType) lines.push(`type: ${messageType}`);
+    if (templateName) lines.push(`template: ${templateName}`);
+    if (textPreview) lines.push(`text: ${textPreview}`);
+    if (typeof log.hasMedia === "boolean") {
+      lines.push(`media: ${log.hasMedia ? "yes" : "no"}`);
+    }
+  }
+
+  if (event === "auth_login" || event === "auth_logout" || event === "auth_login_failed") {
+    const username = getStringValue(log.username);
+    const userId = getStringValue(log.userId);
+    const role = getStringValue(log.role);
+    const ip = getStringValue(log.ip);
+    if (username) lines.push(`user: ${username}`);
+    if (userId) lines.push(`id: ${userId}`);
+    if (role) lines.push(`role: ${role}`);
+    if (ip) lines.push(`ip: ${ip}`);
+  }
+
+  if (event === "server_started") {
+    const host = getStringValue(log.host);
+    const port = getStringValue(log.port);
+    if (host) lines.push(`host: ${host}`);
+    if (port) lines.push(`port: ${port}`);
+  }
+
+  appendErrorLines(lines, log);
+  return formatMultiline(lines);
+};
+
 const formatPrettyMessage = (log: LogRecord, messageKey: string) => {
+  const essential = formatEssentialEvent(log);
+  if (essential) {
+    return essential;
+  }
+
   const message = typeof log[messageKey] === "string" ? log[messageKey] : "";
   const event = typeof log.event === "string" ? log.event : "";
   const service = typeof log.service === "string" ? log.service : "";
@@ -67,25 +193,9 @@ const formatPrettyMessage = (log: LogRecord, messageKey: string) => {
     lines.push(`metrics: ${metrics.join(" | ")}`);
   }
 
-  const error = (log.err as LogRecord | string | undefined) ?? (log.error as LogRecord | string | undefined);
-  if (error) {
-    const errorMessage =
-      typeof error === "string"
-        ? error
-        : typeof error.message === "string"
-        ? error.message
-        : "";
-    const errorCode =
-      typeof error === "object" && error && typeof (error as any).code === "string"
-        ? String((error as any).code)
-        : "";
-    const errorParts = [errorMessage, errorCode ? `code=${errorCode}` : ""].filter(Boolean);
-    if (errorParts.length > 0) {
-      lines.push(`error: ${errorParts.join(" | ")}`);
-    }
-  }
+  appendErrorLines(lines, log);
 
-  return lines.length > 1 ? `${lines[0]}\n  ${lines.slice(1).join("\n  ")}` : lines[0];
+  return formatMultiline(lines);
 };
 
 const prettyStream = shouldPrettyPrint
@@ -108,6 +218,24 @@ export const logger = pino(
     level: env.LOG_LEVEL,
     base: { service: "chatsphere" },
     timestamp: pino.stdTimeFunctions.isoTime,
+    hooks: {
+      logMethod(args, method, level) {
+        if (logFocus === "all") {
+          return method.apply(this, args as any);
+        }
+        const record =
+          args.length > 0 && args[0] && typeof args[0] === "object" ? (args[0] as LogRecord) : {};
+        const numericLevel = typeof level === "number" ? level : Number(level);
+        if (Number.isFinite(numericLevel) && numericLevel >= 40) {
+          return method.apply(this, args as any);
+        }
+        const event = getStringValue(record.event);
+        if (event && ESSENTIAL_EVENTS.has(event)) {
+          return method.apply(this, args as any);
+        }
+        return undefined;
+      },
+    },
     ...(isProduction
       ? {}
       : {

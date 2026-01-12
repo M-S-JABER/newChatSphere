@@ -1,5 +1,6 @@
 import { storage } from './storage';
 import { MetaProvider } from './providers/meta';
+import { logger } from './logger';
 
 export class WebhookDebugger {
   static async debugWebhookFlow(instanceId: string, payload: any, headers: any, query: any) {
@@ -113,8 +114,7 @@ export class WebhookDebugger {
     });
 
     // طباعة في الكونسول
-    console.log('🔍 WEBHOOK DEBUG INFO:');
-    console.log(JSON.stringify(debugInfo, null, 2));
+    logger.debug({ event: "webhook_debug", debugInfo }, "Webhook debug info");
     
     return debugInfo;
   }

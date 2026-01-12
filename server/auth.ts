@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import { promisify } from "util";
 import { env } from "../validate-env";
 import { storage } from "./storage";
+import { logger } from "./logger";
 import { User as SelectUser } from "@shared/schema";
 
 declare global {
@@ -44,6 +45,14 @@ async function comparePasswords(supplied: string, stored: string) {
   const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
   return timingSafeEqual(hashedBuf, suppliedBuf);
 }
+
+const resolveRequestIp = (req: any): string | undefined => {
+  const forwarded = req.headers?.["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim().length > 0) {
+    return forwarded.split(",")[0]?.trim();
+  }
+  return req.ip || req.connection?.remoteAddress || undefined;
+};
 
 export function setupAuth(app: Express) {
   const sessionSettings: session.SessionOptions = {
@@ -103,10 +112,28 @@ export function setupAuth(app: Express) {
     passport.authenticate("local", (err: any, user: Express.User | false) => {
       if (err) return next(err);
       if (!user) {
+        logger.warn(
+          {
+            event: "auth_login_failed",
+            username: typeof req.body?.username === "string" ? req.body.username : undefined,
+            ip: resolveRequestIp(req),
+          },
+          "Login failed",
+        );
         return res.status(401).send("Invalid username or password");
       }
       req.login(user, (err) => {
         if (err) return next(err);
+        logger.info(
+          {
+            event: "auth_login",
+            userId: user.id,
+            username: user.username,
+            role: user.role,
+            ip: resolveRequestIp(req),
+          },
+          "Login successful",
+        );
         const { password: _, ...userWithoutPassword } = user;
         res.status(200).json(userWithoutPassword);
       });
@@ -114,8 +141,22 @@ export function setupAuth(app: Express) {
   });
 
   app.post("/api/logout", (req, res, next) => {
+    const currentUser = req.user;
+    const ip = resolveRequestIp(req);
     req.logout((err) => {
       if (err) return next(err);
+      if (currentUser) {
+        logger.info(
+          {
+            event: "auth_logout",
+            userId: currentUser.id,
+            username: currentUser.username,
+            role: currentUser.role,
+            ip,
+          },
+          "Logout",
+        );
+      }
       res.sendStatus(200);
     });
   });
