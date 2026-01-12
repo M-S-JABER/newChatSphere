@@ -301,6 +301,7 @@ export default function Home() {
       messageType,
       template,
       templateParams,
+      templateButtonParams,
     }: {
       to: string;
       body?: string;
@@ -310,6 +311,7 @@ export default function Home() {
       messageType?: "text" | "template";
       template?: TemplateCatalogItem;
       templateParams?: string[];
+      templateButtonParams?: string[];
     }) => {
       return await apiRequest("POST", "/api/message/send", {
         to,
@@ -326,6 +328,7 @@ export default function Home() {
             }
           : undefined,
         templateParams,
+        templateButtonParams,
       });
     },
     onSuccess: () => {
@@ -619,6 +622,7 @@ export default function Home() {
       messageType?: "text" | "template";
       template?: TemplateCatalogItem;
       templateParams?: string[];
+      templateButtonParams?: string[];
     },
   ) => {
     if (!selectedConversation) {
@@ -633,6 +637,7 @@ export default function Home() {
       messageType: options?.messageType,
       template: options?.template,
       templateParams: options?.templateParams,
+      templateButtonParams: options?.templateButtonParams,
     });
   };
 

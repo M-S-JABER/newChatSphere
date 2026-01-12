@@ -44,6 +44,7 @@ export type ChatComposerSendPayload = {
 export type ChatComposerTemplateSendPayload = {
   template: TemplateCatalogItem;
   params: string[];
+  buttonParams?: string[];
   replyToMessageId?: string;
 };
 
@@ -79,6 +80,54 @@ export interface ChatComposerHandle {
 
 const DEFAULT_MAX_FILES = 10;
 const DEFAULT_MAX_FILE_SIZE_MB = 100;
+
+const normalizeTemplateComponentType = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeTemplateButtonType = (value: unknown): string | null => {
+  const normalized = normalizeTemplateComponentType(value);
+  if (!normalized) return null;
+  return normalized.replace(/\s+/g, "_");
+};
+
+const countTemplatePlaceholders = (text: string): number => {
+  let maxIndex = 0;
+  const regex = /\{\{\s*(\d+)\s*\}\}/g;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const index = Number(match[1]);
+    if (Number.isFinite(index) && index > maxIndex) {
+      maxIndex = index;
+    }
+  }
+
+  return maxIndex;
+};
+
+const countUrlButtonParams = (components?: Array<Record<string, any>>): number => {
+  if (!components) return 0;
+  let count = 0;
+
+  components.forEach((component) => {
+    const type = normalizeTemplateComponentType(component?.type);
+    if (type !== "buttons") return;
+    const buttons = Array.isArray(component?.buttons) ? component.buttons : [];
+    buttons.forEach((button: any) => {
+      const buttonType = normalizeTemplateButtonType(button?.type);
+      if (buttonType !== "url") return;
+      const url = typeof button?.url === "string" ? button.url : "";
+      if (countTemplatePlaceholders(url) > 0) {
+        count += 1;
+      }
+    });
+  });
+
+  return count;
+};
 
 const createAttachment = (file: File): ComposerAttachment => {
   const mime = file.type || "application/octet-stream";
@@ -131,6 +180,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
     const [templatePanelOpen, setTemplatePanelOpen] = useState(false);
     const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
     const [templateParamsInput, setTemplateParamsInput] = useState("");
+    const [templateUrlParamsInput, setTemplateUrlParamsInput] = useState("");
     const [selectedReadyMessageId, setSelectedReadyMessageId] = useState<string | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -383,15 +433,23 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
       null;
 
     const templateParams = parseTemplateParamsInput(templateParamsInput);
+    const templateUrlParams = parseTemplateParamsInput(templateUrlParamsInput);
     const expectedParamCount = selectedTemplate?.bodyParams ?? 0;
+    const expectedUrlParamCount = useMemo(
+      () => countUrlButtonParams(selectedTemplate?.components as Array<Record<string, any>> | undefined),
+      [selectedTemplate?.components],
+    );
     const hasRequiredParams =
       expectedParamCount === 0 || templateParams.length >= expectedParamCount;
+    const hasRequiredUrlParams =
+      expectedUrlParamCount === 0 || templateUrlParams.length >= expectedUrlParamCount;
     const canSendTemplate =
       Boolean(onSendTemplate && selectedTemplate) &&
       !disabled &&
       !isSending &&
       attachments.length === 0 &&
-      hasRequiredParams;
+      hasRequiredParams &&
+      hasRequiredUrlParams;
     const canSendReadyMessage =
       Boolean(selectedReadyMessage) &&
       !disabled &&
@@ -468,12 +526,25 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
         return;
       }
 
+      if (!hasRequiredUrlParams) {
+        setErrors((prev) =>
+          Array.from(
+            new Set([
+              ...prev,
+              `Provide at least ${expectedUrlParamCount} URL parameter${expectedUrlParamCount === 1 ? "" : "s"} for this template.`,
+            ]),
+          ),
+        );
+        return;
+      }
+
       setErrors([]);
       setIsSending(true);
       try {
         await onSendTemplate({
           template: selectedTemplate,
           params: templateParams,
+          buttonParams: templateUrlParams,
           replyToMessageId: replyTo?.id,
         });
         onClearReply?.();
@@ -645,28 +716,55 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(
                         )}
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          Parameters
-                        </p>
-                        <Input
-                          value={templateParamsInput}
-                          onChange={(event) => setTemplateParamsInput(event.target.value)}
-                          placeholder='["name","order"] or single value'
-                          className="h-9"
-                          disabled={!selectedTemplate || disabled}
-                        />
-                        <p className="text-[11px] text-muted-foreground">
-                          {selectedTemplate?.bodyParams
-                            ? `Expected ${selectedTemplate.bodyParams} parameter${
-                                selectedTemplate.bodyParams === 1 ? "" : "s"
-                              }. Use JSON array for multiple values.`
-                            : "Use JSON array for multiple values."}
-                        </p>
-                        {expectedParamCount > 0 && templateParams.length < expectedParamCount && (
-                          <p className="text-[11px] text-destructive">
-                            Missing {expectedParamCount - templateParams.length} parameter
-                            {expectedParamCount - templateParams.length === 1 ? "" : "s"}.
+                        <div className="space-y-1">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Body parameters
                           </p>
+                          <Input
+                            value={templateParamsInput}
+                            onChange={(event) => setTemplateParamsInput(event.target.value)}
+                            placeholder='["name","order"] or single value'
+                            className="h-9"
+                            disabled={!selectedTemplate || disabled}
+                          />
+                          <p className="text-[11px] text-muted-foreground">
+                            {selectedTemplate?.bodyParams
+                              ? `Expected ${selectedTemplate.bodyParams} parameter${
+                                  selectedTemplate.bodyParams === 1 ? "" : "s"
+                                }. Use JSON array for multiple values.`
+                              : "Use JSON array for multiple values."}
+                          </p>
+                          {expectedParamCount > 0 && templateParams.length < expectedParamCount && (
+                            <p className="text-[11px] text-destructive">
+                              Missing {expectedParamCount - templateParams.length} parameter
+                              {expectedParamCount - templateParams.length === 1 ? "" : "s"}.
+                            </p>
+                          )}
+                        </div>
+                        {expectedUrlParamCount > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              URL parameters
+                            </p>
+                            <Input
+                              value={templateUrlParamsInput}
+                              onChange={(event) => setTemplateUrlParamsInput(event.target.value)}
+                              placeholder='["link"] or single value'
+                              className="h-9"
+                              disabled={!selectedTemplate || disabled}
+                            />
+                            <p className="text-[11px] text-muted-foreground">
+                              {`Expected ${expectedUrlParamCount} URL parameter${
+                                expectedUrlParamCount === 1 ? "" : "s"
+                              } for button links.`}
+                            </p>
+                            {templateUrlParams.length < expectedUrlParamCount && (
+                              <p className="text-[11px] text-destructive">
+                                Missing {expectedUrlParamCount - templateUrlParams.length} URL parameter
+                                {expectedUrlParamCount - templateUrlParams.length === 1 ? "" : "s"}.
+                              </p>
+                            )}
+                          </div>
                         )}
                       </div>
                       <Button

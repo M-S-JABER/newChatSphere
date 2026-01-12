@@ -329,6 +329,7 @@ const sanitizeTemplateComponentsForSend = (
 const buildTemplateComponentsFromDefinition = (
   rawComponents: MetaTemplateMessage["components"] | undefined,
   bodyParams: string[] | null,
+  buttonParams: string[] | null,
 ): { components?: MetaTemplateMessage["components"]; error?: string } => {
   if (!rawComponents || rawComponents.length === 0) {
     return { components: applyBodyParamsToComponents(undefined, bodyParams) };
@@ -338,8 +339,9 @@ const buildTemplateComponentsFromDefinition = (
   const sendComponents: MetaTemplateMessage["components"] = [];
   let headerParamCount = 0;
   let bodyParamCount = 0;
-  let needsButtonParams = false;
   let hasCallPermissionRequest = false;
+  let requiredUrlButtonParams = 0;
+  let hasUnsupportedUrlPlaceholders = false;
 
   definitionComponents.forEach((component) => {
     const type = normalizeTemplateComponentType(component?.type);
@@ -352,7 +354,26 @@ const buildTemplateComponentsFromDefinition = (
     if (type === "call_permission_request" || type === "call_permission") {
       hasCallPermissionRequest = true;
     }
+    if (type !== "buttons") return;
+    const buttons = Array.isArray(component?.buttons) ? component.buttons : [];
+    buttons.forEach((button: any) => {
+      const buttonType = normalizeTemplateButtonType(button?.type);
+      if (buttonType !== "url") return;
+      const url = typeof button?.url === "string" ? button.url : "";
+      const placeholderCount = countTemplatePlaceholders(url);
+      if (placeholderCount > 1) {
+        hasUnsupportedUrlPlaceholders = true;
+        return;
+      }
+      if (placeholderCount > 0) {
+        requiredUrlButtonParams += 1;
+      }
+    });
   });
+
+  if (hasUnsupportedUrlPlaceholders) {
+    return { error: "Template URL buttons support only one parameter." };
+  }
 
   if (headerParamCount > 0) {
     return { error: "Template header parameters are not supported yet." };
@@ -378,6 +399,17 @@ const buildTemplateComponentsFromDefinition = (
     });
   }
 
+  if (requiredUrlButtonParams > 0) {
+    if (!buttonParams || buttonParams.length < requiredUrlButtonParams) {
+      return {
+        error: `Template requires ${requiredUrlButtonParams} URL button parameter${
+          requiredUrlButtonParams === 1 ? "" : "s"
+        }.`,
+      };
+    }
+  }
+
+  let urlParamIndex = 0;
   definitionComponents.forEach((component) => {
     const type = normalizeTemplateComponentType(component?.type);
     if (type !== "buttons") return;
@@ -407,15 +439,21 @@ const buildTemplateComponentsFromDefinition = (
       if (buttonType === "url") {
         const url = typeof button?.url === "string" ? button.url : "";
         if (countTemplatePlaceholders(url) > 0) {
-          needsButtonParams = true;
+          const paramValue = buttonParams?.[urlParamIndex];
+          if (!paramValue) {
+            return;
+          }
+          sendComponents.push({
+            type: "button",
+            sub_type: "url",
+            index: String(index),
+            parameters: [{ type: "text", text: paramValue }],
+          });
+          urlParamIndex += 1;
         }
       }
     });
   });
-
-  if (needsButtonParams) {
-    return { error: "Template has URL button parameters that are not supported yet." };
-  }
 
   return {
     components: sendComponents.length > 0 ? sendComponents : undefined,
@@ -459,6 +497,11 @@ const resolveTemplateParams = (templateParams: unknown, body?: string | null): s
   return parseTemplateParamsValue(body);
 };
 
+const resolveTemplateButtonParams = (templateButtonParams: unknown): string[] | null => {
+  const parsed = parseTemplateParamsValue(templateButtonParams);
+  return parsed && parsed.length > 0 ? parsed : null;
+};
+
 const buildBodyParameters = (params: string[]) =>
   params.map((text) => ({ type: "text", text }));
 
@@ -489,6 +532,7 @@ const applyBodyParamsToComponents = (
 const resolveTemplateMessage = (
   templateInput: TemplateRequestInput | string | null | undefined,
   bodyParams?: string[] | null,
+  buttonParams?: string[] | null,
 ): { message: MetaTemplateMessage | null; error?: string } => {
   const template =
     typeof templateInput === "string"
@@ -529,7 +573,7 @@ const resolveTemplateMessage = (
           bodyParams ?? null,
         ),
       }
-    : buildTemplateComponentsFromDefinition(rawComponents, bodyParams ?? null);
+    : buildTemplateComponentsFromDefinition(rawComponents, bodyParams ?? null, buttonParams ?? null);
 
   if (error) {
     return { message: null, error };
@@ -1725,6 +1769,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         messageType,
         template,
         templateParams,
+        templateButtonParams,
       } = req.body as {
         to?: string;
         body?: string | null;
@@ -1734,6 +1779,7 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         messageType?: "text" | "template";
         template?: TemplateRequestInput | string | null;
         templateParams?: string[] | string | null;
+        templateButtonParams?: string[] | string | null;
       };
 
       if (!conversationId && !to) {
@@ -1776,8 +1822,11 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
 
       const recipientPhone = conversation.phone;
       const resolvedTemplateParams = wantsTemplate ? resolveTemplateParams(templateParams, body ?? null) : null;
+      const resolvedTemplateButtonParams = wantsTemplate
+        ? resolveTemplateButtonParams(templateButtonParams)
+        : null;
       const templateResolution = wantsTemplate
-        ? resolveTemplateMessage(template, resolvedTemplateParams)
+        ? resolveTemplateMessage(template, resolvedTemplateParams, resolvedTemplateButtonParams)
         : { message: null as MetaTemplateMessage | null };
 
       const templateMessage = templateResolution.message;
@@ -1914,7 +1963,13 @@ export async function registerRoutes(app: Express, requireAdmin: any): Promise<S
         media: outboundMedia,
         providerMessageId,
         status,
-        raw: wantsTemplate ? { template: templateMessage, params: resolvedTemplateParams } : undefined,
+        raw: wantsTemplate
+          ? {
+              template: templateMessage,
+              params: resolvedTemplateParams,
+              buttonParams: resolvedTemplateButtonParams,
+            }
+          : undefined,
         replyToMessageId: replyToMessageId ?? null,
         sentByUserId: req.user?.id ?? null,
       } as any);

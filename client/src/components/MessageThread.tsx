@@ -82,6 +82,7 @@ type SendMessageOptions = {
   messageType?: "text" | "template";
   template?: TemplateCatalogItem;
   templateParams?: string[];
+  templateButtonParams?: string[];
 };
 
 type TimelineEntry =
@@ -345,6 +346,7 @@ export function MessageThread({
   const handleTemplateSend = async ({
     template,
     params,
+    buttonParams,
     replyToMessageId,
   }: ChatComposerTemplateSendPayload) => {
     if (!conversation) {
@@ -359,6 +361,7 @@ export function MessageThread({
           messageType: "template",
           template,
           templateParams: params,
+          templateButtonParams: buttonParams,
         }),
       );
       setReplyContext(null);
