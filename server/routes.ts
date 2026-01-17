@@ -275,6 +275,9 @@ const normalizeTemplateComponentType = (value: unknown): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
+const stripZeroWidth = (value: string): string =>
+  value.replace(/[\u200B-\u200D\uFEFF\u2060]/g, "");
+
 const countTemplatePlaceholders = (text: string): number => {
   let maxIndex = 0;
   const regex = /\{\{\s*(\d+)\s*\}\}/g;
@@ -288,6 +291,63 @@ const countTemplatePlaceholders = (text: string): number => {
   }
 
   return maxIndex;
+};
+
+const parseUrlValue = (value: string): URL | null => {
+  if (!value) return null;
+  try {
+    return new URL(value);
+  } catch {
+    try {
+      return new URL(value, "https://placeholder.local");
+    } catch {
+      return null;
+    }
+  }
+};
+
+const normalizeUrlButtonParam = (param: string, templateUrl: string): string => {
+  const cleaned = stripZeroWidth(param).trim();
+  if (!cleaned) return "";
+
+  const compact = cleaned.replace(/\s+/g, "");
+  const sanitizedTemplateUrl = stripZeroWidth(templateUrl).trim();
+  const placeholder = sanitizedTemplateUrl.match(/\{\{\s*\d+\s*\}\}/);
+  if (!placeholder) return compact;
+
+  const placeholderToken = placeholder[0];
+  const templateUrlSafe = sanitizedTemplateUrl.replace(placeholderToken, "PLACEHOLDER");
+  const templateUrlParsed = parseUrlValue(templateUrlSafe);
+
+  if (compact.toLowerCase().startsWith("http")) {
+    const paramUrl = parseUrlValue(compact);
+    if (paramUrl && templateUrlParsed) {
+      const paramKeys = Array.from(templateUrlParsed.searchParams.entries()).filter(([, value]) =>
+        value.includes("PLACEHOLDER"),
+      );
+      if (paramKeys.length > 0) {
+        const key = paramKeys[0][0];
+        const extracted = paramUrl.searchParams.get(key);
+        if (extracted) {
+          return stripZeroWidth(extracted).trim();
+        }
+      }
+    }
+  }
+
+  const [prefix = "", suffix = ""] = sanitizedTemplateUrl.split(placeholderToken);
+  const normalizedPrefix = stripZeroWidth(prefix).trim();
+  const normalizedSuffix = stripZeroWidth(suffix).trim();
+  let next = compact;
+
+  if (normalizedPrefix && next.toLowerCase().startsWith(normalizedPrefix.toLowerCase())) {
+    next = next.slice(normalizedPrefix.length);
+  }
+  if (normalizedSuffix && next.toLowerCase().endsWith(normalizedSuffix.toLowerCase())) {
+    next = next.slice(0, Math.max(0, next.length - normalizedSuffix.length));
+  }
+
+  return stripZeroWidth(next).trim();
 };
 
 const normalizeTemplateButtonType = (value: unknown): string | null => {
@@ -451,11 +511,15 @@ const buildTemplateComponentsFromDefinition = (
           if (!paramValue) {
             return;
           }
+          const normalizedParam = normalizeUrlButtonParam(paramValue, url);
+          if (!normalizedParam) {
+            return;
+          }
           sendComponents.push({
             type: "button",
             sub_type: "url",
             index: String(index),
-            parameters: [{ type: "text", text: paramValue }],
+            parameters: [{ type: "text", text: normalizedParam }],
           });
           urlParamIndex += 1;
         }
@@ -470,7 +534,9 @@ const buildTemplateComponentsFromDefinition = (
 
 const parseTemplateParamsValue = (value: unknown): string[] | null => {
   if (Array.isArray(value)) {
-    const normalized = value.map((item) => String(item)).filter((item) => item.trim().length > 0);
+    const normalized = value
+      .map((item) => String(item).trim())
+      .filter((item) => item.length > 0);
     return normalized.length > 0 ? normalized : null;
   }
 
@@ -485,7 +551,9 @@ const parseTemplateParamsValue = (value: unknown): string[] | null => {
     try {
       const parsed = JSON.parse(trimmed);
       if (Array.isArray(parsed)) {
-        const normalized = parsed.map((item) => String(item)).filter((item) => item.trim().length > 0);
+        const normalized = parsed
+          .map((item) => String(item).trim())
+          .filter((item) => item.length > 0);
         return normalized.length > 0 ? normalized : null;
       }
     } catch {
